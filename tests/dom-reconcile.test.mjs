@@ -57,6 +57,27 @@ test('deletion spanning two items merges them like the browser did', () => {
   assert.ok(r.raw.includes('on') && r.raw.includes('ree') && !r.raw.includes('two'));
 });
 
+test('editing a soft-wrapped list item folds in, not reverts (bug #1)', () => {
+  // The item's source spans two physical lines with inline formatting — the
+  // shape the source parser used to refuse, making every such block revert.
+  const t = renderBlock('- alpha *bravo*\n  `charlie` delta\n- echo\n');
+  const node = textNodes(t.el, t.doc).find((n) => n.textContent.includes('delta'));
+  node.textContent = node.textContent.replace('delta', 'deltaX');
+  const r = core.reconcileDomEdit(t.el, t.token, marked);
+  assert.notEqual(r, null, 'wrapped list edit must reconcile, not revert');
+  assert.ok(r.raw.includes('deltaX'), 'the edit lands in source');
+  assert.ok(r.raw.includes('`charlie`') && r.raw.includes('*bravo*'), 'untouched inline source is preserved');
+});
+
+test('editing a lazy-continued blockquote folds in, not reverts (the twin)', () => {
+  const t = renderBlock('> a point that wraps\nonto a lazy line\n');
+  const node = textNodes(t.el, t.doc).find((n) => n.textContent.includes('lazy'));
+  node.textContent = node.textContent.replace('lazy', 'lazier');
+  const r = core.reconcileDomEdit(t.el, t.token, marked);
+  assert.notEqual(r, null, 'lazy quote edit must reconcile, not revert');
+  assert.ok(r.raw.includes('lazier'), 'the edit lands in source');
+});
+
 test('deleting a whole bold run removes its delimiters', () => {
   const t = renderBlock('a **bold** c');
   const strong = t.el.querySelector('strong');

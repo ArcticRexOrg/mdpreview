@@ -415,38 +415,73 @@
   var ITEM_BLOCK_HAZARD = /^(\[[ xX]\][ \t]|#{1,6}[ \t]|>|([-*+]|\d+[.)])([ \t]|$))/;
 
   /**
-   * Parse a list segment line-wise into a flat run of listItem blocks. marked
-   * classifies the segment, but its nested raws are deindented and empty-item
-   * raws truncated, so positions and depths come from the source lines.
-   * Nesting follows marked's content-column rule: a line is nested when its
-   * indent reaches the parent's content column (2 for "- ", 3 for "1. ").
-   * Returns null (out of model) for continuation lines, task items, or
-   * block-level item content.
+   * Parse a list segment line-wise into a flat run of listItem blocks.
+   *
+   * Why a hand scanner and not marked's list token: marked deindents the raws
+   * of nested items (a sub-list's item.raw loses its source indentation), so
+   * its tree can't reconstruct exact source bytes for depth > 0 — and the
+   * reconciler needs those bytes for provenance. The scanner recovers them
+   * from the source lines. marked still owns *acceptance*: `parseBlocks` only
+   * calls this once marked has classified the segment as a list.
+   *
+   * The contract that keeps the two model-entry paths symmetric: this must
+   * accept every list `readBlocksFromDom` accepts. So a marker-less, non-blank
+   * line is a lazy paragraph continuation of the current item (folded in,
+   * deindented) — not a refusal. It returns null only for what the DOM side
+   * also rejects: task items, and a second paragraph after a blank line.
    */
   function parseListBlocks(raw, marked) {
     var blocks = [], stack = [], pos = 0, n = raw.length;
+    // The item lazy continuations fold into, with the deindented inline content
+    // gathered across its physical lines; parsed on close (finalize).
+    var cur = null;
+    function finalize() {
+      if (!cur) return true;
+      var pr = cur.content === '' ? { text: [], prov: [] } : parseInline(cur.content, marked);
+      if (!pr) return false;
+      cur.block.text = pr.text; cur.block.prov = pr.prov;
+      cur = null;
+      return true;
+    }
     while (pos < n) {
       var nl = raw.indexOf('\n', pos);
       var lineEnd = nl < 0 ? n : nl;
       var line = raw.slice(pos, lineEnd);
       var lineRaw = raw.slice(pos, nl < 0 ? n : nl + 1);
       var m = line.match(LIST_LINE_M);
-      if (!m || m[1].indexOf('\t') >= 0) {
+      // A leading [-*+]/number opens an item only when followed by whitespace
+      // or end of line. "*every*" or "-word" is inline text (emphasis, a
+      // hyphenated word) that the browser renders into the current item — not
+      // a new bullet — so it must fall through to the continuation path, the
+      // way marked reads it. Treating it as a marker was the second face of the
+      // same asymmetry: the source side inventing structure the DOM side lacks.
+      var marker = m && m[1].indexOf('\t') < 0 && (m[3] !== '' || m[4] === '');
+      if (!marker) {
         if (/^[ \t]*$/.test(line) && blocks.length) {
           // blank line inside the segment (loose list) — part of the previous
-          // item's separator
+          // item's separator, and it closes that item's paragraph.
           blocks[blocks.length - 1].sep += lineRaw;
           blocks[blocks.length - 1].raw += lineRaw;
+          if (cur) cur.blank = true;
           pos = lineEnd + 1;
           continue;
         }
-        return null; // continuation line — out of model
+        // Marker-less, non-blank: a lazy continuation of the current item.
+        // Deindent (marked drops the wrap indent) and fold into its content.
+        if (cur && !cur.blank) {
+          var contLine = line.replace(/^[ \t]*/, '');
+          if (ITEM_BLOCK_HAZARD.test(contLine)) return null;
+          cur.content += '\n' + contLine;
+          cur.block.raw += lineRaw;
+          cur.block.sep = nl < 0 ? '' : '\n';
+          pos = lineEnd + 1;
+          continue;
+        }
+        return null; // 2nd paragraph after a blank, or no current item
       }
+      if (!finalize()) return null; // close the previous item before opening one
       var content = m[4];
-      if (content !== '' && m[3] === '') return null; // "-x" — not a list line
       if (ITEM_BLOCK_HAZARD.test(content)) return null;
-      var pr = content === '' ? { text: [], prov: [] } : parseInline(content, marked);
-      if (!pr) return null;
       var W = m[1].length, mlen = m[2].length;
       while (stack.length && W < stack[stack.length - 1].content) {
         if (W >= stack[stack.length - 1].indent) break;
@@ -457,19 +492,22 @@
       } else {
         stack[stack.length - 1] = { indent: W, content: W + mlen + 1 };
       }
-      blocks.push({
+      var block = {
         kind: 'listItem',
         depth: stack.length - 1,
         marker: /\d/.test(m[2].charAt(0))
           ? { ordered: true, num: parseInt(m[2], 10), delim: m[2].charAt(m[2].length - 1) }
           : { bullet: m[2] },
-        text: pr.text,
-        prov: pr.prov,
+        text: [],
+        prov: [],
         raw: lineRaw,
         sep: nl < 0 ? '' : '\n',
-      });
+      };
+      blocks.push(block);
+      cur = { block: block, content: content, blank: false };
       pos = lineEnd + 1;
     }
+    if (!finalize()) return null;
     return blocks.length ? blocks : null;
   }
 
@@ -490,20 +528,17 @@
         sep = (segRaw.match(/\n*$/) || [''])[0];
         return [{ kind: 'heading', level: token.depth, text: pr.text, prov: pr.prov, raw: segRaw, sep: sep }];
       case 'blockquote': {
-        content = segRaw.replace(/\n+$/, '');
-        var lines = content.split('\n'), inner = [];
-        for (var i = 0; i < lines.length; i++) {
-          var qm = lines[i].match(/^>[ \t]?(.*)$/);
-          if (!qm) return null; // lazy continuation — out of model
-          inner.push(qm[1]);
-        }
-        var joined = inner.join('\n');
-        var innerToks;
-        try { innerToks = marked.lexer(joined); } catch (_) { return null; }
-        var real = innerToks.filter(function (t) { return t.type !== 'space'; });
-        if (real.length !== 1 || real[0].type !== 'paragraph') return null; // block structure inside the quote
-        pr = parseInline(joined, marked);
+        // Acceptance is marked's: its blockquote token already de-prefixes the
+        // `>` markers and joins lazy continuations into inner block tokens. We
+        // only model a single-paragraph quote — exactly what readBlocksFromDom
+        // accepts (one <p> child) — so the source side can never reject a quote
+        // the DOM side keeps. The hand-rolled `>`-prefix line scan this
+        // replaced rejected lazy continuations marked accepts (uneditable).
+        var inner = token.tokens.filter(function (t) { return t.type !== 'space'; });
+        if (inner.length !== 1 || inner[0].type !== 'paragraph') return null; // multi-block quote — out of model
+        pr = parseInline(inner[0].text, marked);
         if (!pr) return null;
+        content = segRaw.replace(/\n+$/, '');
         return [{ kind: 'quote', text: pr.text, prov: pr.prov, raw: segRaw, sep: segRaw.slice(content.length) }];
       }
       case 'list':
