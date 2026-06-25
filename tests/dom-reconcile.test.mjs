@@ -78,6 +78,39 @@ test('editing a lazy-continued blockquote folds in, not reverts (the twin)', () 
   assert.ok(r.raw.includes('lazier'), 'the edit lands in source');
 });
 
+test('a heading edit that strands a trailing nbsp folds, not reverts (bug #2)', () => {
+  // The editor-log bug: deleting the trailing parenthetical leaves WebKit's
+  // &nbsp;. marked trims trailing whitespace from a heading, so the block could
+  // never reconcile and the whole deletion reverted.
+  const t = renderBlock('### Reconciliation — the closure guarantees (where the recent failures were)\n');
+  t.el.querySelector('h3').innerHTML = 'Reconciliation — the closure guarantees&nbsp;';
+  const r = core.reconcileDomEdit(t.el, t.token, marked);
+  assert.notEqual(r, null, 'the deletion must fold, not revert');
+  assert.equal(r.raw, '### Reconciliation — the closure guarantees\n', 'source drops the unrepresentable trailing space');
+});
+
+test('a stranded edge artifact with no real edit reverts to a clean re-render', () => {
+  // A lone trailing nbsp (no other change): source needs nothing, but the DOM
+  // must not be left carrying it. Reconcile reverts (caller re-renders clean)
+  // rather than reporting "unchanged" and stranding the artifact.
+  const t = renderBlock('## Title\n');
+  t.el.querySelector('h2').innerHTML = 'Title&nbsp;';
+  const r = core.reconcileDomEdit(t.el, t.token, marked);
+  assert.equal(r, null, 'artifact-only DOM must revert so the re-render sheds it');
+});
+
+test('a list item leading-space artifact does not write non-round-tripping source', () => {
+  // "<li> delta</li>" must not serialize to "-  delta" (which marked renders
+  // back as "delta", diverging). The leading edge space is normalized away.
+  const t = renderBlock('- alpha\n- delta\n');
+  const li = t.el.querySelectorAll('li')[1];
+  li.insertBefore(t.doc.createTextNode(' '), li.firstChild);
+  const r = core.reconcileDomEdit(t.el, t.token, marked);
+  // Either a clean re-render (null) or a folded source with no doubled marker
+  // space — never "-  delta".
+  if (r && r.changed) assert.ok(!/-\s{2,}delta/.test(r.raw), `must not strand a leading space: ${JSON.stringify(r.raw)}`);
+});
+
 test('deleting a whole bold run removes its delimiters', () => {
   const t = renderBlock('a **bold** c');
   const strong = t.el.querySelector('strong');

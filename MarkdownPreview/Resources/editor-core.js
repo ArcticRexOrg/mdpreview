@@ -745,6 +745,47 @@
     }
   }
 
+  // marked trims leading and trailing whitespace from every block's rendered
+  // text, so no markdown source can reproduce a block whose text starts or ends
+  // with whitespace. WebKit's editing engine strands exactly that — an &nbsp;
+  // injected after a delete, a space typed at an edge — and a block carrying it
+  // could never reconcile (it would revert, losing the edit it rode in on).
+  // Return a clone with each renderable container's edge whitespace trimmed, so
+  // the DOM reads back the way a source would render it. Whitespace inside a
+  // code span is literal content and is left alone.
+  var EDGE_TRIM_SEL = 'h1,h2,h3,h4,h5,h6,p,li';
+  var EDGE_BLOCK = { UL: 1, OL: 1, LI: 1, P: 1, BLOCKQUOTE: 1, PRE: 1, TABLE: 1, DIV: 1, H1: 1, H2: 1, H3: 1, H4: 1, H5: 1, H6: 1 };
+  function edgeTextNodes(container) {
+    var out = [];
+    (function walk(node) {
+      for (var n = node.firstChild; n; n = n.nextSibling) {
+        if (n.nodeType === 3) { out.push(n); continue; }
+        if (n.nodeType !== 1) continue;
+        var tag = n.tagName.toUpperCase();
+        if (tag === 'CODE' || tag === 'PRE') continue;     // literal whitespace
+        if (n !== container && EDGE_BLOCK[tag]) continue;   // a nested block — not this container's edge
+        walk(n);
+      }
+    })(container);
+    return out;
+  }
+  function normalizeBoundaryWs(el) {
+    var clone = el.cloneNode(true);
+    var conts = [];
+    if (/^(H[1-6]|P|LI)$/.test((clone.tagName || '').toUpperCase())) conts.push(clone);
+    if (clone.querySelectorAll) {
+      var found = clone.querySelectorAll(EDGE_TRIM_SEL);
+      for (var i = 0; i < found.length; i++) conts.push(found[i]);
+    }
+    for (var c = 0; c < conts.length; c++) {
+      var tn = edgeTextNodes(conts[c]);
+      if (!tn.length) continue;
+      tn[0].textContent = tn[0].textContent.replace(/^\s+/, '');
+      tn[tn.length - 1].textContent = tn[tn.length - 1].textContent.replace(/\s+$/, '');
+    }
+    return clone;
+  }
+
   function readBlocksFromDom(el, base) {
     var root = el.cloneNode(true);
     stripStructuralWhitespace(root);
@@ -1688,14 +1729,23 @@
     var doc = el.ownerDocument;
     var leaves = leafMap(blockToken);
     var oldDisp = leaves.map(function (L) { return dispShownOf(L.token); }).join('');
-    var newDisp = (el.textContent || '').replace(/\n+$/, '');
-    var domCanon = canonicalOfEl(el, base);
+    // Read the DOM with WebKit's edge-whitespace artifacts normalized away (see
+    // normalizeBoundaryWs). `artifact` records that the live DOM held such an
+    // artifact: the source needs no extra content, but the block must still be
+    // re-rendered to shed it, so this can't be reported as "unchanged" — that
+    // would leave the artifact live and divergent. same() reverts instead,
+    // which re-renders the block from source and cleans it.
+    var rd = normalizeBoundaryWs(el);
+    var newDisp = (rd.textContent || '').replace(/\n+$/, '');
+    var domCanon = canonicalOfEl(rd, base);
+    var artifact = domCanon !== canonicalOfEl(el, base);
+    function same() { return artifact ? null : { changed: false }; }
     if (newDisp === oldDisp &&
         renderedCanonicalOf(doc, blockToken.raw, marked) === domCanon) {
-      return { changed: false };
+      return same();
     }
     function accept(cand) {
-      if (cand === blockToken.raw) return { changed: false };
+      if (cand === blockToken.raw) return same();
       var tok = relexMatches(doc, cand, newDisp, marked);
       if (tok === null) return null;
       if (renderedCanonicalOf(doc, cand, marked) !== domCanon) return null;
@@ -1703,7 +1753,7 @@
     }
     var oldBlocks = parseBlocks(blockToken.raw, marked);
     if (!oldBlocks) return null; // block outside the model — refuse, don't guess
-    var newBlocks = readBlocksFromDom(el, base);
+    var newBlocks = readBlocksFromDom(rd, base);
     if (!newBlocks) return null; // DOM structure outside the model
     var adopted = diffBlocks(oldBlocks, newBlocks);
     var cand = printBlocks(adopted, marked);

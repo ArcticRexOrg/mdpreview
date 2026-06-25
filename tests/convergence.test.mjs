@@ -172,6 +172,25 @@ const ACTIONS = [
     fire(t, 'keydown', { key: 'z', metaKey: true, shiftKey: shift });
     return shift ? 'redo' : 'undo';
   },
+  function strandEdgeWs(t, rnd) {
+    // Emulate WebKit stranding whitespace at a block's edge after a delete (the
+    // &nbsp; it injects, or a space typed against a boundary) — content no
+    // markdown source can hold. The editor must shed it on flush, not strand it
+    // and diverge. jsdom never produces the artifact on its own, so probe it.
+    const divs = [...t.doc.querySelectorAll('[data-seg][contenteditable="true"]')];
+    if (!divs.length) return null;
+    const div = pick(rnd, divs);
+    const w = t.doc.createTreeWalker(div, t.win.NodeFilter.SHOW_TEXT);
+    const tn = []; let x; while ((x = w.nextNode())) if (x.textContent.length) tn.push(x);
+    if (!tn.length) return null;
+    const ws = rnd() < 0.5 ? String.fromCharCode(0xa0) /* nbsp */ : " ";
+    const atEnd = rnd() < 0.5;
+    const node = atEnd ? tn[tn.length - 1] : tn[0];
+    const off = atEnd ? node.textContent.length : 0;
+    setCaret(t, node, off);
+    if (!fire(t, 'beforeinput', { inputType: 'insertText', data: ws })) node.insertData(off, ws);
+    return `strand ${ws === " " ? "space" : "nbsp"} @ ${atEnd ? "end" : "start"}`;
+  },
 ];
 
 // Display text the source should produce — rendered exactly the way the
