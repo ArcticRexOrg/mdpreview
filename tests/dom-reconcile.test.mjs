@@ -99,6 +99,42 @@ test('a stranded edge artifact with no real edit reverts to a clean re-render', 
   assert.equal(r, null, 'artifact-only DOM must revert so the re-render sheds it');
 });
 
+test('untouched blocks starting or ending with a code span read back unchanged', () => {
+  // The space beside a code span at a block's edge is rendered inter-word
+  // content, not a WebKit artifact. Trimming it glued the words ("via `/tdd`"
+  // → "via`/tdd`" → rendered "via/tdd") — and, worse, made a render + flush
+  // with NO user edit report a change, so every external disk change got
+  // "merged" and written back mangled.
+  for (const md of [
+    'Run tests via `/tdd`\n',
+    '`/tdd` runs the loop\n',
+    '- configured via `make test`\n',
+    '## Setup via `/tdd`\n',
+    'ends with an image ![alt](i.png)\n',
+  ]) {
+    const t = renderBlock(md);
+    const r = core.reconcileDomEdit(t.el, t.token, marked);
+    assert.deepEqual(r, { changed: false }, `${JSON.stringify(md)} must read back unchanged`);
+  }
+});
+
+test('an artifact stranded beyond an edge code span is still shed', () => {
+  // The code span occupies the edge, but a trailing nbsp injected AFTER it is
+  // still an artifact: revert so the re-render sheds it.
+  const t = renderBlock('Run tests via `/tdd`\n');
+  t.el.querySelector('p').appendChild(t.doc.createTextNode(' '));
+  const r = core.reconcileDomEdit(t.el, t.token, marked);
+  assert.equal(r, null, 'artifact-only DOM must revert so the re-render sheds it');
+});
+
+test('an edit elsewhere in a block ending with a code span keeps the edge space', () => {
+  const t = renderBlock('Run the tests via `/tdd` now\n');
+  const nodes = textNodes(t.el, t.doc);
+  nodes[nodes.length - 1].textContent = ''; // delete the trailing " now"
+  const r = core.reconcileDomEdit(t.el, t.token, marked);
+  assert.equal(r.raw, 'Run the tests via `/tdd`\n');
+});
+
 test('a list item leading-space artifact does not write non-round-tripping source', () => {
   // "<li> delta</li>" must not serialize to "-  delta" (which marked renders
   // back as "delta", diverging). The leading edge space is normalized away.

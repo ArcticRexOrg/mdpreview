@@ -751,19 +751,29 @@
   // injected after a delete, a space typed at an edge — and a block carrying it
   // could never reconcile (it would revert, losing the edit it rode in on).
   // Return a clone with each renderable container's edge whitespace trimmed, so
-  // the DOM reads back the way a source would render it. Whitespace inside a
-  // code span is literal content and is left alone.
+  // the DOM reads back the way a source would render it.
+  //
+  // The edge is found by CONTENT, not by text node: a visible code span or
+  // image at a block's boundary IS the boundary, and the space in the text
+  // node beside it ("via `/tdd`") is rendered inter-word content, not an
+  // artifact — trimming it would glue the words ("via/tdd"). Only when the
+  // outermost item on a side is a text node can that side hold an artifact.
   var EDGE_TRIM_SEL = 'h1,h2,h3,h4,h5,h6,p,li';
   var EDGE_BLOCK = { UL: 1, OL: 1, LI: 1, P: 1, BLOCKQUOTE: 1, PRE: 1, TABLE: 1, DIV: 1, H1: 1, H2: 1, H3: 1, H4: 1, H5: 1, H6: 1 };
-  function edgeTextNodes(container) {
+  function edgeItems(container) {
     var out = [];
     (function walk(node) {
       for (var n = node.firstChild; n; n = n.nextSibling) {
         if (n.nodeType === 3) { out.push(n); continue; }
         if (n.nodeType !== 1) continue;
         var tag = n.tagName.toUpperCase();
-        if (tag === 'CODE' || tag === 'PRE') continue;     // literal whitespace
         if (n !== container && EDGE_BLOCK[tag]) continue;   // a nested block — not this container's edge
+        if (tag === 'CODE' || VISIBLE_EMPTY_TAGS[tag]) {
+          // Opaque inline content (code span, image, …): when visible it can
+          // occupy the edge; when empty it's an editing leftover to skip past.
+          if (subtreeVisible(n)) out.push(n);
+          continue;
+        }
         walk(n);
       }
     })(container);
@@ -778,10 +788,11 @@
       for (var i = 0; i < found.length; i++) conts.push(found[i]);
     }
     for (var c = 0; c < conts.length; c++) {
-      var tn = edgeTextNodes(conts[c]);
-      if (!tn.length) continue;
-      tn[0].textContent = tn[0].textContent.replace(/^\s+/, '');
-      tn[tn.length - 1].textContent = tn[tn.length - 1].textContent.replace(/\s+$/, '');
+      var items = edgeItems(conts[c]);
+      if (!items.length) continue;
+      var first = items[0], last = items[items.length - 1];
+      if (first.nodeType === 3) first.textContent = first.textContent.replace(/^\s+/, '');
+      if (last.nodeType === 3) last.textContent = last.textContent.replace(/\s+$/, '');
     }
     return clone;
   }
