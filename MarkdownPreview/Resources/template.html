@@ -191,6 +191,7 @@
         var _segments = [];          // EditorCore.segment() output; raw join === file
         var _baseMarkdown = '';      // last version common to disk + view (for 3-way merge)
         var _saveTimer = null;       // debounce for autosave
+        var _dirty = false;          // user edits since the last disk sync — the ONLY licence to write the file
         var _conflicts = [];         // open blocking conflicts (suspends autosave)
         var _undoStack = [];         // our own undo (native undo bypasses source mutations); entries are { md, caret }
         var _redoStack = [];
@@ -279,6 +280,7 @@
             // A full (re)load from Swift establishes a new common base for merges.
             _rawMarkdown = md;
             _baseMarkdown = md;
+            _dirty = false;
             _conflicts = [];
             if (_currentMode === 'reading') {
                 renderReading();
@@ -1039,6 +1041,7 @@
         }
 
         function scheduleSave() {
+            _dirty = true;
             if (_conflicts.length) return;
             clearTimeout(_saveTimer);
             _saveTimer = setTimeout(saveNow, 500);
@@ -1090,7 +1093,12 @@
             if (_conflicts.length) return;
             flushActive();
             var md = currentMarkdown();
+            // No user edits and nothing folded out of the DOM → nothing to
+            // persist. Posting anyway would rewrite identical bytes and churn
+            // the file's mtime under every watcher pointed at it.
+            if (!_dirty && md === _baseMarkdown) return;
             _rawMarkdown = md; _baseMarkdown = md;
+            _dirty = false;
             elog('save ' + md.length + ' bytes');
             if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.documentEdited) {
                 window.webkit.messageHandlers.documentEdited.postMessage(md);
@@ -1335,6 +1343,17 @@
 
         // Called from Swift when the file changed on disk under the editor.
         function applyDiskChange(diskMd) {
+            // No user edits since the last sync → disk wins verbatim. The DOM
+            // read-back + merge must not run on an idle document: any lossiness
+            // in the round trip would manufacture "local edits" out of nothing
+            // and write them back — re-mangling every external save/restore in
+            // a loop. An idle viewer never writes the file, full stop.
+            if (!_dirty && !_conflicts.length) {
+                elog('applyDiskChange idle — take disk verbatim ' + diskMd.length + 'b');
+                _rawMarkdown = diskMd; _baseMarkdown = diskMd;
+                renderReading();
+                return;
+            }
             // Fold any in-progress (unsaved) edit into the source first, or the
             // merge can't see it and would silently drop it / miss a conflict.
             flushActive();

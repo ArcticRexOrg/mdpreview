@@ -307,7 +307,7 @@ test('editing keys over a select-all are refused and leave the source untouched'
   const c = pressDocKey(t, 'c', { metaKey: true });
   assert.equal(c.defaultPrevented, false, 'Cmd+C must fall through to native copy');
   t.win.saveNow();
-  assert.equal(t.saved(), before, 'saved bytes unchanged');
+  assert.equal(t.saved(), null, 'an unchanged document posts no save at all');
 });
 
 test('Escape collapses a select-all and restores per-block editing', async () => {
@@ -395,4 +395,33 @@ test('Cmd+Z routed at document level still undoes after Cmd+A', async () => {
   assert.equal(t.md(), 'hello world\n\nsecond\n', 'undo must apply');
   assert.ok(!t.doc.getElementById('content').classList.contains('cross-select'),
     'the re-render exits cross mode');
+});
+
+// --- applyDiskChange: the app must never write a file the user isn't editing ---
+
+test('a disk change on an idle document is taken verbatim, never written back', async () => {
+  // Blocks ending in code spans were the killer: the lossy DOM read-back
+  // manufactured "local edits" out of nothing, and every external restore got
+  // re-mangled and saved within seconds. Idle → disk wins, no post, ever.
+  const t = await setup('Run tests via `/tdd`\n\n- configured via `make test`\n');
+  const disk = '# Restored by someone else\n\nRun tests via `/tdd`\n';
+  t.win.applyDiskChange(disk);
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(t.md(), disk, 'the editor adopts the disk content exactly');
+  assert.equal(t.saved(), null, 'no save may be scheduled or posted');
+  t.win.saveNow(); // even a forced save (blur path) has nothing to persist
+  assert.equal(t.saved(), null, 'an idle document never posts to Swift');
+});
+
+test('a disk change with real unsaved edits still merges and persists', async () => {
+  const t = await setup('alpha\n\nbravo\n');
+  caret(t.win, { text: 'alpha', at: 5 });
+  beforeInput(t.win, 'insertText', 'X'); // marks the doc dirty (jsdom does not mutate the DOM itself)
+  const walk = t.doc.createTreeWalker(t.doc.getElementById('content'), t.win.NodeFilter.SHOW_TEXT);
+  let node; while ((node = walk.nextNode())) if (node.textContent.includes('alpha')) break;
+  node.textContent = 'alphaX'; // what WebKit's default insert would have done
+  t.win.applyDiskChange('alpha\n\nbravo2\n');
+  await new Promise((r) => setTimeout(r, 0));
+  t.win.saveNow();
+  assert.equal(t.saved(), 'alphaX\n\nbravo2\n', 'local edit and disk edit both survive');
 });
