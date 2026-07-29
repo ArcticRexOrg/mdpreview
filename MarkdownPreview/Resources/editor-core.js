@@ -21,9 +21,9 @@
   'use strict';
 
   // Block token types the user is allowed to edit in place. Everything else
-  // (space separators, fenced/indented code, mermaid — which is a `code` token
-  // with lang "mermaid" — html, hr) is rendered read-only and its source bytes
-  // pass through verbatim.
+  // (frontmatter, space separators, fenced/indented code, mermaid — which is a
+  // `code` token with lang "mermaid" — html, hr) is rendered read-only and its
+  // source bytes pass through verbatim.
   // Tables use a distinct token shape (.header/.rows) the leaf re-serializer
   // doesn't reconstruct, so they stay read-only for now (correct-but-limited).
   var EDITABLE_BLOCKS = { paragraph: true, heading: true, blockquote: true, list: true };
@@ -33,20 +33,56 @@
   }
 
   /**
+   * Recognize YAML frontmatter only at the start of a document. Frontmatter is
+   * an extension to CommonMark, so marked otherwise reads the opening fence as
+   * an hr and the closing fence as a setext-heading underline.
+   *
+   * The returned `raw` includes both fences and the closing newline (when
+   * present); `content` is the YAML between them. No YAML interpretation is
+   * attempted here — arbitrary valid YAML must remain byte-inert.
+   */
+  function leadingFrontmatter(md) {
+    var match = /^(?:\uFEFF)?---[ \t]*\r?\n([\s\S]*?)^---[ \t]*(?:\r?\n|$)/m.exec(md);
+    if (!match) return null;
+    return {
+      raw: match[0],
+      content: match[1],
+      rest: md.slice(match[0].length),
+    };
+  }
+
+  /**
    * Split markdown into top-level block segments. The invariant the rest of the
    * editor relies on: segs.map(s => s.raw).join('') === md, byte for byte.
    */
   function segment(md, marked) {
-    var tokens = marked.lexer(md);
-    return tokens.map(function (token, i) {
-      return {
-        index: i,
+    var frontmatter = leadingFrontmatter(md);
+    var tokens = marked.lexer(frontmatter ? frontmatter.rest : md);
+    var segments = [];
+    if (frontmatter) {
+      var token = {
+        type: 'frontmatter',
+        raw: frontmatter.raw,
+        text: frontmatter.content,
+      };
+      segments.push({
+        index: 0,
+        type: token.type,
+        raw: token.raw,
+        token: token,
+        editable: false,
+      });
+    }
+    tokens.forEach(function (token) {
+      segments.push({
+        index: segments.length,
         type: token.type,
         raw: token.raw,
         token: token,
         editable: isEditableBlock(token),
-      };
+      });
     });
+    return segments;
   }
 
   function childrenOf(token) {
@@ -1783,6 +1819,7 @@
 
   return {
     segment: segment,
+    leadingFrontmatter: leadingFrontmatter,
     isEditableBlock: isEditableBlock,
     toggleEmphasis: toggleEmphasis,
     splitBlock: splitBlock,

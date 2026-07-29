@@ -126,6 +126,49 @@
             white-space: pre-wrap;
         }
 
+        /* YAML frontmatter: visible metadata, distinct from document prose. */
+        #content .frontmatter {
+            margin: 0 0 1.5em;
+            border: 1px solid #d0d7de;
+            border-radius: 6px;
+            background: #f6f8fa;
+            color: #57606a;
+            overflow: hidden;
+            break-inside: avoid;
+        }
+        #content .frontmatter-label {
+            padding: 7px 12px;
+            border-bottom: 1px solid #d8dee4;
+            color: #656d76;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+            font-size: 11px;
+            font-weight: 600;
+            letter-spacing: 0.08em;
+            line-height: 1.3;
+            text-transform: uppercase;
+        }
+        #content .frontmatter pre {
+            margin: 0 !important;
+            padding: 11px 12px !important;
+            border: 0 !important;
+            border-radius: 0 !important;
+            background: transparent !important;
+            color: inherit !important;
+            font-size: 0.82em !important;
+            line-height: 1.45 !important;
+            white-space: pre-wrap !important;
+            overflow-wrap: anywhere;
+        }
+        #content .frontmatter code {
+            padding: 0 !important;
+            border: 0 !important;
+            background: transparent !important;
+            color: inherit !important;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-size: inherit !important;
+            white-space: inherit;
+        }
+
         /* Editing: keep the per-block wrappers transparent to layout. */
         #content .seg { outline: none; }
         #content .seg[contenteditable="true"]:focus { outline: none; }
@@ -160,6 +203,18 @@
             background: #f5f5f5; cursor: pointer;
         }
         .conflict-actions button[data-act="mine"] { background: #2f6fdb; border-color: #2f6fdb; color: #fff; }
+
+        @media (prefers-color-scheme: dark) {
+            html:not([data-theme=light]) #content .frontmatter {
+                border-color: #30363d;
+                background: #161b22;
+                color: #9da7b3;
+            }
+            html:not([data-theme=light]) #content .frontmatter-label {
+                border-color: #30363d;
+                color: #8c959f;
+            }
+        }
     </style>
     <script src="marked.min.js"></script>
     <script src="highlight.min.js"></script>
@@ -177,6 +232,35 @@
                 if (h) attrs += ' height="' + h + '"';
                 return '<div><img ' + attrs + '></div>\n';
             });
+        }
+
+        function escapeHTML(text) {
+            return String(text)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        function renderFrontmatter(raw) {
+            var parsed = EditorCore.leadingFrontmatter(raw);
+            var yaml = parsed ? parsed.content.replace(/\r?\n$/, '') : raw;
+            return '<aside class="frontmatter" aria-label="Frontmatter">' +
+                '<div class="frontmatter-label">Frontmatter</div>' +
+                '<pre><code class="language-yaml">' + escapeHTML(yaml) + '</code></pre>' +
+                '</aside>';
+        }
+
+        function renderSegment(seg) {
+            if (seg.type === 'frontmatter') return renderFrontmatter(seg.raw);
+            return marked.parse(preprocessImages(seg.raw));
+        }
+
+        function renderDocumentMarkdown(md) {
+            var parsed = EditorCore.leadingFrontmatter(md);
+            if (!parsed) return marked.parse(preprocessImages(md));
+            return renderFrontmatter(parsed.raw) + marked.parse(preprocessImages(parsed.rest));
         }
 
         var _rawMarkdown = '';
@@ -325,7 +409,7 @@
                     return;
                 }
                 div.setAttribute('contenteditable', (editing && seg.editable) ? 'true' : 'false');
-                div.innerHTML = marked.parse(preprocessImages(seg.raw));
+                div.innerHTML = renderSegment(seg);
                 EditorCore.stripStructuralWhitespace(div);
                 content.appendChild(div);
             });
@@ -364,7 +448,7 @@
                 document.body.appendChild(el);
             }
             // Render markdown into content (hidden)
-            el.innerHTML = marked.parse(preprocessImages(_rawMarkdown));
+            el.innerHTML = renderDocumentMarkdown(_rawMarkdown);
             el.className = isGithubTheme() ? 'markdown-body' : '';
             resolveRelativePaths(el);
             document.querySelectorAll('#content pre code:not(.language-mermaid)').forEach(function(block) {
@@ -591,7 +675,7 @@
         }
 
         function renderSeg(div, seg) {
-            div.innerHTML = marked.parse(preprocessImages(seg.raw));
+            div.innerHTML = renderSegment(seg);
             EditorCore.stripStructuralWhitespace(div);
             resolveRelativePaths(div);
             div.querySelectorAll('pre code:not(.language-mermaid)').forEach(function(b){ hljs.highlightElement(b); });

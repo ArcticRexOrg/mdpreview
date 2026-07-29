@@ -47,3 +47,37 @@ test('code and mermaid blocks are tagged non-editable; prose is editable', () =>
   assert.ok(paras.length >= 1);
   assert.equal(paras[0].editable, true, 'prose is editable');
 });
+
+test('leading YAML frontmatter is one read-only segment and round-trips exactly', () => {
+  const md = [
+    '---',
+    'name: get-moving',
+    'description: >-',
+    '  Lead decisively.',
+    '---',
+    '',
+    '# Get Moving',
+    '',
+  ].join('\n');
+  const segs = core.segment(md, marked);
+
+  assert.equal(segs[0].type, 'frontmatter');
+  assert.equal(segs[0].editable, false);
+  assert.equal(segs[0].token.text, 'name: get-moving\ndescription: >-\n  Lead decisively.\n');
+  assert.equal(segs.map((s) => s.raw).join(''), md);
+  assert.equal(segs.find((s) => s.type === 'heading').token.text, 'Get Moving');
+});
+
+test('a thematic break later in a document is not frontmatter', () => {
+  const md = 'Before.\n\n---\n\nAfter.\n';
+  const segs = core.segment(md, marked);
+  assert.equal(segs.some((s) => s.type === 'frontmatter'), false);
+  assert.equal(segs.some((s) => s.type === 'hr'), true);
+});
+
+test('an unclosed opening fence remains ordinary CommonMark', () => {
+  const md = '---\nname: unfinished\n';
+  const segs = core.segment(md, marked);
+  assert.equal(segs.some((s) => s.type === 'frontmatter'), false);
+  assert.equal(segs[0].type, 'hr');
+});

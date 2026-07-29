@@ -79,6 +79,37 @@ test('Return at the end of a list item creates a new item', async () => {
   assert.equal(t.md(), '- one\n- two\n-'); // bare-bullet empty item (renders 3 bullets)
 });
 
+test('frontmatter renders as a read-only metadata panel without changing source', async () => {
+  const md = '---\nname: get-moving\ndescription: >-\n  Lead <decisively> & safely.\n---\n\n# Get Moving\n';
+  const t = await setup(md);
+  const panel = t.doc.querySelector('.frontmatter');
+  const segment = panel && panel.closest('[data-seg]');
+
+  assert.ok(panel, 'frontmatter panel should be present');
+  assert.match(panel.textContent, /Frontmatter/);
+  assert.match(panel.textContent, /name: get-moving/);
+  assert.match(panel.textContent, /Lead <decisively> & safely\./);
+  assert.equal(panel.querySelector('decisively'), null, 'YAML-looking HTML must render as text');
+  assert.equal(segment.getAttribute('contenteditable'), 'false');
+  assert.equal(t.doc.querySelector('.frontmatter hr'), null);
+  assert.equal(t.doc.querySelector('.frontmatter h2'), null);
+  assert.equal(t.doc.querySelector('h1').textContent, 'Get Moving');
+  assert.equal(t.md(), md);
+});
+
+test('document rendering uses the same frontmatter presentation', async () => {
+  const md = '---\nname: doc\n---\n\n# Title\n';
+  const t = await setup(md);
+  const scratch = t.doc.createElement('div');
+  scratch.innerHTML = t.win.renderDocumentMarkdown(md);
+
+  assert.ok(scratch.querySelector('.frontmatter'));
+  assert.equal(scratch.querySelector('.frontmatter').textContent.includes('name: doc'), true);
+  assert.equal(scratch.querySelector('hr'), null);
+  assert.equal(scratch.querySelector('h2'), null);
+  assert.equal(scratch.querySelector('h1').textContent, 'Title');
+});
+
 test('Backspace at the start of an item merges it into the previous one', async () => {
   const t = await setup('- one\n- two\n');
   caret(t.win, { text: 'two', at: 0 });

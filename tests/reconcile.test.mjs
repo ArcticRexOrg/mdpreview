@@ -24,6 +24,15 @@ test('edits to different blocks both apply with no conflict', () => {
   assert.deepEqual(r.conflicts, []);
 });
 
+test('a disk frontmatter change merges with a local body edit', () => {
+  const base = '---\nname: old\n---\n\nBody\n';
+  const view = '---\nname: old\n---\n\nBody locally edited\n';
+  const disk = '---\nname: new\n---\n\nBody\n';
+  const r = core.reconcile(base, view, disk, marked);
+  assert.equal(r.merged, '---\nname: new\n---\n\nBody locally edited\n');
+  assert.deepEqual(r.conflicts, []);
+});
+
 test('edits to the same block raise one conflict, view pre-selected', () => {
   const base = 'A\n\nB';
   const view = 'Av\n\nB';
