@@ -602,9 +602,36 @@
             }
         }
 
-        function setTheme(cssFile, codeTheme) {
+        // The configured code theme, plus the variant to substitute while the
+        // appearance is dark (only set for page themes that follow
+        // prefers-color-scheme). Defaults match the <link> tags so the
+        // resolution is right even before Swift's first setTheme call.
+        // Document mode never resolves dark: the native layer forces a light
+        // appearance there, so the media query cannot match.
+        var _codeTheme = 'highlight-github.min.css';
+        var _darkCodeTheme = 'highlight-dark.min.css';
+
+        function applyCodeTheme() {
+            var link = document.getElementById('code-theme-link');
+            if (!link) return; // headless test DOM carries no stylesheet links
+            var dark = _darkCodeTheme && window.matchMedia
+                && window.matchMedia('(prefers-color-scheme: dark)').matches;
+            link.href = dark ? _darkCodeTheme : _codeTheme;
+        }
+
+        if (window.matchMedia) {
+            var _mq = window.matchMedia('(prefers-color-scheme: dark)');
+            // addListener fallback: the jsdom test stub predates addEventListener
+            if (_mq.addEventListener) _mq.addEventListener('change', applyCodeTheme);
+            else if (_mq.addListener) _mq.addListener(applyCodeTheme);
+        }
+        applyCodeTheme();
+
+        function setTheme(cssFile, codeTheme, darkCodeTheme) {
             document.getElementById('theme-link').href = cssFile;
-            document.getElementById('code-theme-link').href = codeTheme;
+            _codeTheme = codeTheme;
+            _darkCodeTheme = darkCodeTheme || null;
+            applyCodeTheme();
             // Update class on content div if it exists
             var el = document.getElementById('content');
             if (el) {

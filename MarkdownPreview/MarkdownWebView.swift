@@ -242,7 +242,8 @@ struct MarkdownWebView: NSViewRepresentable {
 
         private func evaluateTheme(_ theme: Theme) {
             guard let webView else { return }
-            let js = "setTheme('\(theme.cssFile)', '\(theme.codeThemeFile)')"
+            let darkCodeTheme = theme.darkCodeThemeFile.map { "'\($0)'" } ?? "null"
+            let js = "setTheme('\(theme.cssFile)', '\(theme.codeThemeFile)', \(darkCodeTheme))"
             webView.evaluateJavaScript(js, completionHandler: nil)
         }
 
