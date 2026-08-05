@@ -1069,7 +1069,7 @@
       if (srcOff < re) {
         if (srcOff <= acc) return sp.from;
         var plain = '';
-        for (var c = 0; c < sp.chars.length; c++) plain += sp.chars[c].obj ? ' ' : sp.chars[c].ch;
+        for (var c = 0; c < sp.chars.length; c++) plain += sp.chars[c].obj ? '\x00' : sp.chars[c].ch;
         if (sp.raw === plain) return sp.from + Math.min(srcOff - acc, n);
         var lead = provLeadLen(sp.raw);
         return sp.from + Math.max(0, Math.min(srcOff - acc - lead, n));
