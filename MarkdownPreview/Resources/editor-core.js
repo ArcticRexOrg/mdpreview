@@ -40,9 +40,15 @@
    * The returned `raw` includes both fences and the closing newline (when
    * present); `content` is the YAML between them. No YAML interpretation is
    * attempted here — arbitrary valid YAML must remain byte-inert.
+   *
+   * The pattern deliberately carries no `m` flag: `^` must mean "start of
+   * document", not "start of any line", or a pair of thematic breaks in the
+   * middle of a document would be swallowed as frontmatter. The closing fence
+   * is instead pinned to a line start by requiring the captured YAML to be
+   * either empty or newline-terminated.
    */
   function leadingFrontmatter(md) {
-    var match = /^(?:\uFEFF)?---[ \t]*\r?\n([\s\S]*?)^---[ \t]*(?:\r?\n|$)/m.exec(md);
+    var match = /^(?:\uFEFF)?---[ \t]*\r?\n((?:[\s\S]*?\r?\n)?)---[ \t]*(?:\r?\n|$)/.exec(md);
     if (!match) return null;
     return {
       raw: match[0],

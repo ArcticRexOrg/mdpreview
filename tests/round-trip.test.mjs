@@ -75,6 +75,14 @@ test('a thematic break later in a document is not frontmatter', () => {
   assert.equal(segs.some((s) => s.type === 'hr'), true);
 });
 
+test('repeated thematic breaks are not read as a frontmatter block', () => {
+  const md = '# Title\n\nOne.\n\n---\n\nTwo.\n\n---\n\nThree.\n';
+  const segs = core.segment(md, marked);
+  assert.equal(segs.some((s) => s.type === 'frontmatter'), false);
+  assert.equal(segs.filter((s) => s.type === 'hr').length, 2);
+  assert.equal(segs.map((s) => s.raw).join(''), md);
+});
+
 test('an unclosed opening fence remains ordinary CommonMark', () => {
   const md = '---\nname: unfinished\n';
   const segs = core.segment(md, marked);
