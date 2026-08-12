@@ -392,7 +392,7 @@
             // Segmented render: one editable <div data-seg> per top-level block,
             // so edits can be folded back into just that block's source. `space`
             // separators stay in _segments (for reassembly) but aren't rendered.
-            if (!keepSegments) _segments = EditorCore.segment(_rawMarkdown, marked);
+            if (!keepSegments) _segments = EditorCore.segment(_rawMarkdown, marked, document);
             content.className = isGithubTheme() ? 'markdown-body' : '';
             content.innerHTML = '';
             var editing = (_currentMode === 'reading' && _conflicts.length === 0);
@@ -697,7 +697,7 @@
         function segIndexOf(div) { return parseInt(div.getAttribute('data-seg'), 10); }
 
         function relexSeg(seg) {
-            var re = EditorCore.segment(seg.raw, marked);
+            var re = EditorCore.segment(seg.raw, marked, document);
             if (re.length === 1) { seg.token = re[0].token; seg.type = re[0].type; seg.editable = re[0].editable; }
         }
 
@@ -989,8 +989,8 @@
             // stray trailing newline (which would segment into an extra blank).
             before = before.replace(/\s+$/, '');
             after = after.replace(/^\s+/, '');
-            var beforeSegs = before ? EditorCore.segment(before, marked) : [];
-            var afterSegs = after ? EditorCore.segment(after, marked) : [];
+            var beforeSegs = before ? EditorCore.segment(before, marked, document) : [];
+            var afterSegs = after ? EditorCore.segment(after, marked, document) : [];
             var tp = makeTransient();
             var repl = beforeSegs.concat([tp], afterSegs);
             // A trailing empty item can orphan its " \n" into a following space
@@ -1507,7 +1507,7 @@
             if (c.segIndex >= 0 && _segments[c.segIndex]) {
                 _segments[c.segIndex].raw = chosen; relexSeg(_segments[c.segIndex]);
             } else {
-                _rawMarkdown = chosen; _segments = EditorCore.segment(chosen, marked);
+                _rawMarkdown = chosen; _segments = EditorCore.segment(chosen, marked, document);
             }
             _conflicts = _conflicts.filter(function(x){ return x !== c; });
             _rawMarkdown = currentMarkdown();

@@ -10,11 +10,15 @@ import { core, marked } from './_setup.mjs';
 // Render one block's markdown into a detached <div data-seg> like the app does.
 // The app strips structural whitespace at render time (so textContent matches
 // the token display model); mirror that here via core.stripStructuralWhitespace.
+// The document is created first and handed to segment(), as the app does:
+// that is what builds the block's coordinate map and decides editability.
+// Segmenting without one leaves the token unmapped and exercises nothing.
 function renderBlock(md) {
-  const seg = core.segment(md, marked)[0];
-  const html = marked.parser([seg.token]);
-  const dom = new JSDOM(`<!DOCTYPE html><div id="seg">${html}</div>`);
-  const el = dom.window.document.getElementById('seg');
+  const dom = new JSDOM('<!DOCTYPE html><div id="seg"></div>');
+  const doc = dom.window.document;
+  const seg = core.segment(md, marked, doc)[0];
+  const el = doc.getElementById('seg');
+  el.innerHTML = marked.parser([seg.token]);
   core.stripStructuralWhitespace(el);
   return { seg, el, win: dom.window };
 }

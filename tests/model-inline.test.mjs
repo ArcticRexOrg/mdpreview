@@ -152,6 +152,10 @@ test('canonText keeps interior whitespace inside a run', () => {
   assert.ok(c[1].attrs.b, 'interior space keeps b — the run must not split');
 });
 
+// Stricter than markdown requires — `*foo `x`*` is representable — but lifting
+// it lets the printer emit bold ending directly before another codespan, whose
+// delimiters do not reliably pair. See the note in canonText; this is the
+// known cause of the remaining refusals inside emphasised codespans.
 test('canonText strips emphasis under code', () => {
   const t = chars('x', { code: true, b: true, i: true });
   const c = M.canonText(t);

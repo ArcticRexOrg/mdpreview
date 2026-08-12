@@ -61,7 +61,19 @@
    * Split markdown into top-level block segments. The invariant the rest of the
    * editor relies on: segs.map(s => s.raw).join('') === md, byte for byte.
    */
-  function segment(md, marked) {
+  /**
+   * Split a document into top-level blocks.
+   *
+   * `doc` is optional but wanted: given one, a block is editable exactly when
+   * the model can build a coordinate map for it (see blockCoords), and the map
+   * is carried on the token for the DOM adapter to use. Editable, mappable and
+   * reconcilable then name one property instead of three overlapping ones —
+   * the mismatch between them is what let blocks accept keystrokes they could
+   * not fold back into source. Without a `doc` we fall back to the old
+   * by-token-type test, which is enough for callers that only read `.raw`
+   * (conflict reconciliation, whole-document parsing).
+   */
+  function segment(md, marked, doc) {
     var frontmatter = leadingFrontmatter(md);
     var tokens = marked.lexer(frontmatter ? frontmatter.rest : md);
     var segments = [];
@@ -80,15 +92,34 @@
       });
     }
     tokens.forEach(function (token) {
+      var editable = isEditableBlock(token);
+      if (editable && doc) {
+        var coords = blockCoords(doc, token.raw, marked);
+        setCoords(token, coords);
+        editable = coords !== null;
+      }
       segments.push({
         index: segments.length,
         type: token.type,
         raw: token.raw,
         token: token,
-        editable: isEditableBlock(token),
+        editable: editable,
       });
     });
     return segments;
+  }
+
+  // The coordinate map rides on the token rather than being threaded through
+  // the adapter's twenty-odd call sites: a signature change there would let a
+  // missed site pass `undefined` and silently drop back to the old ledger,
+  // which is the failure mode this whole change exists to remove.
+  var COORDS = '__coords';
+  function setCoords(token, coords) {
+    try { Object.defineProperty(token, COORDS, { value: coords, configurable: true }); }
+    catch (_) { token[COORDS] = coords; }
+  }
+  function coordsOf(token) {
+    return token && token[COORDS] ? token[COORDS] : null;
   }
 
   function childrenOf(token) {
@@ -119,7 +150,12 @@
       if (body.charAt(0) === '#') {
         var code = (body.charAt(1) === 'x' || body.charAt(1) === 'X')
           ? parseInt(body.slice(2), 16) : parseInt(body.slice(1), 10);
-        if (!isFinite(code) || code <= 0) { bad = true; return m; }
+        // Out of Unicode range, or a lone surrogate: fromCodePoint throws on
+        // the first and yields an unpaired surrogate on the second. The
+        // renderer substitutes U+FFFD for both; the model never guesses
+        // display text, so refuse instead and leave the fragment byte-opaque.
+        if (!isFinite(code) || code <= 0 || code > 0x10FFFF ||
+            (code >= 0xD800 && code <= 0xDFFF)) { bad = true; return m; }
         return String.fromCodePoint(code);
       }
       if (ENTITIES.hasOwnProperty(body)) return ENTITIES[body];
@@ -251,6 +287,16 @@
   function canonText(text) {
     var out = text.map(copyChar), i;
     for (i = 0; i < out.length; i++) {
+      // Emphasis around a codespan (`*foo `x`*`) is ordinary markdown and the
+      // printer can nest it correctly, so this exclusivity is stricter than it
+      // needs to be: it is why an edit inside an emphasised codespan is still
+      // refused (see laws.test.mjs — the remaining "Links"/"Code spans" tail).
+      // Lifting it, though, lets the printer emit a bold run that ends
+      // immediately before another codespan, and those delimiters do not
+      // always pair — `**``a`b``**` ` ` reparses with literal asterisks. The
+      // model would need a representability check with somewhere to fall back
+      // to before this rule can go; until then the strict version is the one
+      // that keeps print/parse a round trip.
       if (out[i].attrs.code || out[i].obj) {
         if (out[i].obj) { delete out[i].attrs.code; }
         if (out[i].attrs.code) { delete out[i].attrs.b; delete out[i].attrs.i; delete out[i].attrs.del; }
@@ -308,9 +354,31 @@
 
   function attrValOf(c, key) { return key === 'link' ? (c.attrs.link || null) : !!c.attrs[key]; }
 
+  /**
+   * A link destination written bare cannot hold whitespace, angle brackets, or
+   * unbalanced parentheses. `[a](<b)c>)` has destination "b)c"; printed bare it
+   * becomes `[a](b)c)`, which ends the link at the first ")" and leaves "c)" as
+   * text — so every edit in such a link was refused. The pointy form accepts
+   * all of it and needs only < and > escaped.
+   */
+  function emitDest(href) {
+    href = href || '';
+    var depth = 0, ok = true;
+    for (var i = 0; i < href.length && ok; i++) {
+      var ch = href.charAt(i);
+      if (ch === '(') depth++;
+      else if (ch === ')' && --depth < 0) ok = false;
+    }
+    if (href !== '' && ok && depth === 0 && !/[\s<>]/.test(href)) return href;
+    return '<' + href.replace(/([<>\\])/g, '\\$1') + '>';
+  }
+  function emitTitle(title) {
+    return title ? ' "' + title.replace(/(["\\])/g, '\\$1') + '"' : '';
+  }
+
   function emitCharCanon(c, k, B, noEsc) {
     B.pos[k] = B.s.length;
-    if (c.obj) B.s += '![' + (c.alt || '') + '](' + c.src + (c.title ? ' "' + c.title + '"' : '') + ')';
+    if (c.obj) B.s += '![' + (c.alt || '') + '](' + emitDest(c.src) + emitTitle(c.title) + ')';
     else B.s += (!noEsc && ESCAPABLE.test(c.ch)) ? '\\' + c.ch : c.ch;
     B.end[k] = B.s.length;
   }
@@ -324,36 +392,81 @@
     var runs = content.match(/`+/g), longest = 0;
     if (runs) for (k = 0; k < runs.length; k++) longest = Math.max(longest, runs[k].length);
     var fence = new Array(longest + 2).join('`');
-    var pad = (content === '' || /^[ `]|[ `]$/.test(content)) ? ' ' : '';
+    // The one-space padding is stripped back off by CommonMark only when the
+    // content is not entirely spaces. For all-space content the padding is
+    // therefore added to it, not protection for it: `` ` ` `` already means one
+    // space, while `` `   ` `` means three.
+    var allSpace = content.length > 0 && !/[^ ]/.test(content);
+    var pad = (!allSpace && (content === '' || /^[ `]|[ `]$/.test(content))) ? ' ' : '';
     B.s += fence + pad;
     for (k = i; k < j; k++) { B.pos[k] = B.s.length; B.s += text[k].ch; B.end[k] = B.s.length; }
     B.s += pad + fence;
   }
 
-  function printCanonInto(text, a, b, d, B, noEsc) {
+  // How far the run of `key` starting at i extends, within [i,b). Links compare
+  // by reference — parseInline shares one link object across a run — so two
+  // adjacent links to the same target stay two runs, as they render.
+  function runEndOf(text, i, b, key) {
+    var v = attrValOf(text[i], key);
+    if (!v) return i;
+    var j = i + 1;
+    while (j < b && attrValOf(text[j], key) === v) j++;
+    return j;
+  }
+
+  /**
+   * Print a range of styled text as canonical markdown.
+   *
+   * At each position the attribute with the *longest* remaining run becomes the
+   * outer delimiter. A fixed priority order cannot work: with bold ranked above
+   * italic, `*foo **bar** baz*` printed as `*foo *` + `***bar***` + `* baz*` —
+   * the italic closed and reopened around the bold, which both renders as three
+   * <em>s instead of one and (with the delimiters running together) reparses as
+   * something else entirely. Widest-first is the only order that nests.
+   *
+   * `mask` carries the attributes already opened by enclosing calls. Code stays
+   * innermost by construction rather than by rank: it is emitted only once no
+   * other attribute applies, so it can never swallow an enclosing link.
+   */
+  function printCanonInto(text, a, b, B, noEsc, mask) {
     if (a >= b) return;
-    if (d >= PRINT_PRIO.length) {
-      for (var k = a; k < b; k++) emitCharCanon(text[k], k, B, noEsc);
-      return;
-    }
-    var key = PRINT_PRIO[d], i = a;
+    mask = mask || {};
+    var NESTABLE = ['link', 'b', 'i', 'del'];
+    var i = a;
     while (i < b) {
-      var hv = attrValOf(text[i], key), j = i + 1;
-      while (j < b && attrValOf(text[j], key) === hv) j++;
-      if (!hv) printCanonInto(text, i, j, d + 1, B, noEsc);
-      else if (key === 'link') {
+      var bestKey = null, bestEnd = i, k;
+      for (k = 0; k < NESTABLE.length; k++) {
+        var key = NESTABLE[k];
+        if (mask[key] || !attrValOf(text[i], key)) continue;
+        var end = runEndOf(text, i, b, key);
+        if (end > bestEnd) { bestKey = key; bestEnd = end; }
+      }
+      if (!bestKey) {
+        if (!mask.code && attrValOf(text[i], 'code')) {
+          var ce = runEndOf(text, i, b, 'code');
+          emitCodeCanon(text, i, ce, B);
+          i = ce;
+        } else {
+          emitCharCanon(text[i], i, B, noEsc);
+          i++;
+        }
+        continue;
+      }
+      var hv = attrValOf(text[i], bestKey);
+      var sub = {};
+      for (var m in mask) if (mask.hasOwnProperty(m)) sub[m] = mask[m];
+      sub[bestKey] = true;
+      if (bestKey === 'link') {
         B.s += '[';
-        printCanonInto(text, i, j, d + 1, B, noEsc);
-        B.s += '](' + hv.href + (hv.title ? ' "' + hv.title + '"' : '') + ')';
-      } else if (key === 'code') {
-        emitCodeCanon(text, i, j, B);
+        printCanonInto(text, i, bestEnd, B, noEsc, sub);
+        B.s += '](' + emitDest(hv.href) + emitTitle(hv.title) + ')';
       } else {
-        var dlm = key === 'b' ? '**' : key === 'i' ? '*' : '~~';
+        var dlm = bestKey === 'b' ? '**' : bestKey === 'i' ? '*' : '~~';
         B.s += dlm;
-        printCanonInto(text, i, j, d + 1, B, noEsc);
+        printCanonInto(text, i, bestEnd, B, noEsc, sub);
         B.s += dlm;
       }
-      i = j;
+      i = bestEnd;
     }
   }
 
@@ -369,6 +482,37 @@
     if (raw.slice(0, 2) === '![') return 0;
     if (raw.charAt(0) === '[') return 1;
     return 0;
+  }
+
+  // Do two chars carry a style that would run continuously between them?
+  // Links compare by target, not by reference: two adjacent links to the same
+  // place still render as two <a> elements.
+  function sharesAttr(a, b) {
+    a = a || {}; b = b || {};
+    if (a.b && b.b) return true;
+    if (a.i && b.i) return true;
+    if (a.code && b.code) return true;
+    if (a.del && b.del) return true;
+    if (a.link && b.link && a.link.href === b.link.href &&
+        (a.link.title || '') === (b.link.title || '')) return true;
+    return false;
+  }
+
+  /**
+   * Would a seam between emitted pieces at char index k split a styled run?
+   *
+   * Every seam closes and reopens whatever styles cross it: `*X*_foo_` is two
+   * <em> elements where `*Xfoo*` is one. The model cannot see that difference —
+   * per-char attributes are identical either way, so printInlineParts' own
+   * reparse check passes happily — but the rendered DOM plainly can, and
+   * reconciliation compares rendered structure. That gap is why typing a
+   * character anywhere inside nested emphasis (`_foo __bar__ baz_`,
+   * `[link *foo*][ref]`) was refused at every position: the printer produced a
+   * source that modelled correctly and rendered wrongly.
+   */
+  function splitsRun(text, k) {
+    if (k <= 0 || k >= text.length) return false;
+    return sharesAttr(text[k - 1].attrs, text[k].attrs);
   }
 
   function matchChunk(text, at, chars) {
@@ -397,7 +541,7 @@
   function printInlineParts(text, prov, marked) {
     var B = { s: '', pos: new Array(text.length), end: new Array(text.length) };
     if (!prov || !prov.length || !marked) {
-      printCanonInto(text, 0, text.length, 0, B, false);
+      printCanonInto(text, 0, text.length, B, false);
       return B;
     }
     var i = 0, pi = 0;
@@ -410,11 +554,19 @@
       if (j - L >= i && matchChunk(text, j - L, sp.chars)) { tail.unshift(sp); sj--; j -= L; }
       else break;
     }
+    // Pull both reuse boundaries out of any styled run they landed inside, a
+    // whole provenance span at a time (the boundaries are span-aligned). The
+    // widened middle is then printed canonically, which re-emits the run as one
+    // piece. If the two boundaries cross, nothing can be reused and the full
+    // canonical print below takes over.
+    while (pi > 0 && splitsRun(text, i)) { pi--; i -= prov[pi].chars.length; }
+    while (tail.length && splitsRun(text, j)) { j += tail[0].chars.length; tail.shift(); }
+    if (i > j) { i = 0; j = text.length; pi = 0; tail = []; }
     function assemble(noEsc) {
       var A = { s: '', pos: new Array(text.length), end: new Array(text.length) };
       var at = 0, h;
       for (h = 0; h < pi; h++) { emitProvSpan(prov[h], at, A); at += prov[h].chars.length; }
-      printCanonInto(text, i, j, 0, A, noEsc);
+      printCanonInto(text, i, j, A, noEsc);
       at = j;
       for (h = 0; h < tail.length; h++) { emitProvSpan(tail[h], at, A); at += tail[h].chars.length; }
       return A;
@@ -432,7 +584,7 @@
     if (!B && i < j) B = verified(assemble(false));
     if (!B) {
       B = { s: '', pos: new Array(text.length), end: new Array(text.length) };
-      printCanonInto(text, 0, text.length, 0, B, false);
+      printCanonInto(text, 0, text.length, B, false);
     }
     return B;
   }
@@ -632,6 +784,14 @@
       if (local == null) local = inline.length;
     }
     if (b.kind === 'heading') {
+      // Two things ATX cannot hold, both of which setext can. A newline: ATX is
+      // single-line, so "## Foo\nBar" lexes as a heading followed by a
+      // paragraph. And leading whitespace: the hashes swallow it, so "  Foo"
+      // came back as "Foo" and the edit landed a character short. Only levels 1
+      // and 2 have a setext form, and only those can carry either.
+      if ((inline.indexOf('\n') >= 0 || /^\s/.test(inline)) && (b.level === 1 || b.level === 2)) {
+        return { s: inline + '\n' + (b.level === 1 ? '===' : '---'), pos: local >= 0 ? local : -1 };
+      }
       var pre = new Array((b.level || 1) + 1).join('#') + ' ';
       return { s: pre + inline, pos: local >= 0 ? pre.length + local : -1 };
     }
@@ -1427,6 +1587,18 @@
   // *linear display offsets* (cumulative textContent length), which is robust
   // to the fact that escapes/entities merge into neighbouring text nodes and
   // marked appends a trailing "\n" to each block.
+  //
+  // Everything here runs on the StyledDoc model — the same parse the reconciler
+  // and every block op use. It used to run on a second, private ledger
+  // (`leafMap`) that predicted what the renderer would show by summing token
+  // text, and located source spans by searching for each token's raw in the
+  // block source. Both were guesses, and each construct where they guessed
+  // wrong was a bug: blank lines inside a blockquote, hard breaks, task-list
+  // checkboxes, and images — the last already carrying a hand-written patch for
+  // exactly this. Measured across the CommonMark corpus, that ledger placed the
+  // caret wrongly at 10% of positions and mishandled a quarter of single-
+  // character insertions. There is now one model, and blocks it cannot map are
+  // not offered for editing at all (see `blockCoords` and `segment`).
 
   var SHOW_TEXT = 4; // NodeFilter.SHOW_TEXT
 
@@ -1555,6 +1727,108 @@
     return last ? { node: last, offset: last.textContent.length } : { node: null, offset: 0 };
   }
 
+  /**
+   * The coordinate map for one editable block — or null, meaning the block
+   * cannot be mapped and so must not be offered for editing.
+   *
+   * Three coordinate systems meet in the editor, and every caret bug this file
+   * has ever had was two of them disagreeing:
+   *
+   *   src   byte offset into the block's markdown source
+   *   char  index into the model's styled-text array
+   *   disp  offset into the rendered DOM's textContent — where the caret is
+   *
+   * src → char already exists as blockCharAt, the function the block ops use.
+   * Rather than hand-write its inverse — a second implementation, which is
+   * precisely how this file acquired two disagreeing ledgers — we invert it by
+   * enumeration: run every source offset through the forward map and record
+   * where each char first appears. Round-tripping is then structural. The two
+   * directions cannot disagree because there is only one direction.
+   *
+   * The `disp` axis is not predicted either. It is checked: the model's own
+   * display text must equal what the renderer actually produces for this
+   * source, or we return null. That single comparison is what makes the map
+   * trustworthy — and it is the honest definition of "editable", since a block
+   * whose displayed text we cannot account for is one whose caret positions we
+   * would be guessing at.
+   */
+  function blockCoords(doc, segRaw, marked) {
+    var blocks = parseBlocks(segRaw, marked);
+    if (!blocks) return null;
+
+    // Global char array across the block's inner blocks (list items, etc).
+    var chars = [], charBase = [], srcBase = [], b, i, at = 0;
+    for (i = 0; i < blocks.length; i++) {
+      b = blocks[i];
+      if (b.kind === 'opaque' || !b.text) return null; // no styled text — unmappable
+      charBase.push(chars.length);
+      srcBase.push(at);
+      at += (b.raw || '').length;
+      chars = chars.concat(b.text);
+    }
+
+    // The check that makes this map worth trusting.
+    var modelDisp = '';
+    for (i = 0; i < chars.length; i++) if (!chars[i].obj) modelDisp += chars[i].ch;
+    if (renderedDisplayOf(doc, segRaw, marked) !== modelDisp) return null;
+
+    // src → char, by the model's own forward map.
+    var srcOfChar = new Array(chars.length);      // first source offset for a char
+    var srcEndOfChar = new Array(chars.length);   // last source offset for a char
+    var charOfSrc = new Array(segRaw.length + 1);
+    for (var s = 0; s <= segRaw.length; s++) {
+      var loc = blockAtOffset(blocks, s); // clamps to the last block past the end
+      if (!loc) return null;
+      var c = charBase[loc.i] + blockCharAt(blocks[loc.i], s - loc.start);
+      c = Math.max(0, Math.min(c, chars.length));
+      charOfSrc[s] = c;
+      if (srcOfChar[c] === undefined) srcOfChar[c] = s;
+      srcEndOfChar[c] = s;
+    }
+    // Chars no source offset landed on (inside a delimiter run) take the
+    // nearest earlier char's source position — the caret before them.
+    for (i = 0; i < chars.length; i++) {
+      if (srcOfChar[i] === undefined) srcOfChar[i] = i > 0 ? srcOfChar[i - 1] : 0;
+    }
+    if (srcOfChar[chars.length] === undefined) srcOfChar[chars.length] = segRaw.length;
+
+    // char ↔ disp. Widths are in UTF-16 code units, the unit DOM offsets use,
+    // so astral characters do not skew the map. Images occupy a char but show
+    // nothing.
+    var dispOfChar = new Array(chars.length + 1), charOfDisp = [];
+    var d = 0;
+    for (i = 0; i < chars.length; i++) {
+      dispOfChar[i] = d;
+      var w = chars[i].obj ? 0 : chars[i].ch.length;
+      for (var k = 0; k < w; k++) { charOfDisp[d + k] = i; }
+      d += w;
+    }
+    dispOfChar[chars.length] = d;
+    charOfDisp[d] = chars.length;
+
+    // Inner blocks with no text — a just-created empty list item — host a caret
+    // but occupy no display offset, so they are unreachable through the disp
+    // axis: every position there belongs to the following item's first char.
+    // They are addressed by element instead, paired in document order with the
+    // empty <li>/<p> the renderer produces.
+    var empties = [];
+    for (i = 0; i < blocks.length; i++) {
+      if (blocks[i].text.length) continue;
+      // Past its own marker: the caret sits where the item's content would
+      // start, not at the earliest offset that snaps to the following char.
+      empties.push({
+        src: srcBase[i] + blockFragStart(blocks[i]),
+        srcStart: srcBase[i],
+        srcEnd: srcBase[i] + (blocks[i].raw || '').length,
+      });
+    }
+    return {
+      chars: chars, dispLen: d, empties: empties,
+      srcOfChar: srcOfChar, srcEndOfChar: srcEndOfChar, charOfSrc: charOfSrc,
+      dispOfChar: dispOfChar, charOfDisp: charOfDisp,
+    };
+  }
+
   // bias resolves leaf-boundary ambiguity: a selection START at a leaf boundary
   // biases into the following leaf (e.g. just past an opening **), an END into
   // the preceding leaf (just before a closing **) so emphasis stays selectable.
@@ -1562,6 +1836,44 @@
   // end it stays in that node's last leaf (so end-of-item-1 ≠ start-of-item-2).
   // Within a node, adjacent leaves are source-contiguous so either side agrees.
   function domOffsetToSourceOffset(el, node, offset, blockToken, bias) {
+    var coords = coordsOf(blockToken);
+    if (coords) {
+      // A caret parked in an empty block element has no display offset of its
+      // own — it would resolve to the next item's first character — so resolve
+      // it by element identity instead.
+      if (node && node.nodeType === 1 && coords.empties.length) {
+        var ei = emptyBlockEls(el).indexOf(node);
+        if (ei >= 0 && ei < coords.empties.length) return coords.empties[ei].src;
+      }
+      var dispPos = displayOffset(el, node, offset);
+      dispPos = Math.max(0, Math.min(dispPos, coords.dispLen));
+      var ci = coords.charOfDisp[dispPos];
+      if (ci === undefined) ci = coords.chars.length;
+      // One display offset can be two source positions — the end of one list
+      // item and the start of the next share it — and which one is meant
+      // decides whether Backspace merges items or deletes a character. Inside a
+      // run the two coincide (adjacent chars are source-contiguous), so this
+      // only bites at a seam: resolve it the way the caret sits, biased by the
+      // caller for selection ends.
+      // srcOfChar holds the earliest source offset that resolves to this char —
+      // at a seam that is the end of the *previous* item; srcEndOfChar holds the
+      // latest, which is the start of this item's own content.
+      var preferNext = bias === 'start' ? true : bias === 'end' ? false : (offset <= 0);
+      if (preferNext && coords.srcEndOfChar[ci] !== undefined) return coords.srcEndOfChar[ci];
+      return coords.srcOfChar[ci];
+    }
+    return legacyDomOffsetToSourceOffset(el, node, offset, blockToken, bias);
+  }
+
+  // The old ledger, still reached in one place: the structural ops (split,
+  // indent, outdent) restore the caret through intermediate sources such as
+  // "    * b" or "- ab\n      - c", which blockCoords declines to map, so
+  // coordsOf comes back empty and this runs instead. Those states are never
+  // offered to the user for editing — they exist for a moment inside one
+  // operation — but until they are modelled this file still contains two
+  // ledgers, and only one of them is measured by the law suite. Deleting this
+  // is the last step of the migration, not a step already taken.
+  function legacyDomOffsetToSourceOffset(el, node, offset, blockToken, bias) {
     var leaves = leafMap(blockToken);
     // Caret parked in an empty block element (empty <li>): map to the paired
     // zero-width leaf's source position.
@@ -1647,6 +1959,33 @@
   }
 
   function sourceOffsetToDom(el, srcOffset, blockToken) {
+    var coords = coordsOf(blockToken);
+    if (coords) {
+      var s = Math.max(0, Math.min(srcOffset, coords.charOfSrc.length - 1));
+      // An offset inside a textless block belongs to that block's element, not
+      // to the next item's first character.
+      for (var e = 0; e < coords.empties.length; e++) {
+        if (s >= coords.empties[e].srcStart && s <= coords.empties[e].srcEnd) {
+          var els = emptyBlockEls(el);
+          if (e < els.length) return { node: els[e], offset: 0 };
+        }
+      }
+      var ci = coords.charOfSrc[s];
+      if (ci === undefined) ci = coords.chars.length;
+      var dispPos = coords.dispOfChar[ci];
+      if (dispPos === undefined) dispPos = coords.dispLen;
+      // Both sides of a seam share this display offset. An offset below the
+      // char's own start names the trailing edge of the previous item, so put
+      // the caret at the end of that text node rather than the start of the
+      // next — otherwise end-of-item-1 and start-of-item-2 collapse together
+      // and Backspace stops being able to tell them apart.
+      var atStart = coords.srcEndOfChar[ci] === undefined || s >= coords.srcEndOfChar[ci];
+      return locateDisp(textNodesOf(el), dispPos, atStart);
+    }
+    return legacySourceOffsetToDom(el, srcOffset, blockToken);
+  }
+
+  function legacySourceOffsetToDom(el, srcOffset, blockToken) {
     var leaves = leafMap(blockToken);
     var nodes = textNodesOf(el);
     for (var i = 0; i < leaves.length; i++) {
@@ -1686,10 +2025,8 @@
   // token text is NOT a safe proxy: e.g. a paragraph's leading space survives
   // in the token but is dropped by the renderer.
   function renderedDisplayOf(doc, md, marked) {
-    var scratch = doc.createElement('div');
-    try { scratch.innerHTML = marked.parse(md); } catch (_) { return null; }
-    stripStructuralWhitespace(scratch);
-    return scratch.textContent.replace(/\n+$/, '');
+    var r = renderedOf(doc, md, marked);
+    return r === null ? null : r.disp;
   }
 
   // The convergence fingerprint: the entire rendered DOM, canonicalized.
@@ -1715,7 +2052,16 @@
       v = v || '';
       return base && v.indexOf(base) === 0 ? v.slice(base.length) : v;
     }
-    (function walk(node) {
+    // Styling that nests inside itself is idempotent: <em><em>x</em></em> and
+    // <em>x</em> are the same thing to a reader, and the model — where a char
+    // is italic or is not — cannot tell them apart either. Sources like
+    // `_foo _bar_ baz_` produce the doubled form, so counting it as a distinct
+    // structure made every edit in such a block unreconcilable. Collapsing it
+    // here costs nothing: the block is re-rendered from the reconciled source,
+    // so the redundant wrapper disappears on the first edit and the rendering
+    // is identical either way.
+    var IDEMPOTENT = { EM: true, STRONG: true, DEL: true, CODE: true };
+    (function walk(node, open) {
       for (var n = node.firstChild; n; n = n.nextSibling) {
         if (n.nodeType === 3) { buf += n.textContent; continue; }
         if (n.nodeType !== 1) continue;
@@ -1723,21 +2069,32 @@
         if (tag === 'IMG') { flush(); out.push('IMG[' + deBase(n.getAttribute('src')) + '|' + (n.getAttribute('alt') || '') + ']'); continue; }
         if (tag === 'BR') { if (!brIsContent(n, el)) continue; flush(); out.push('BR'); continue; }
         if (!subtreeVisible(n)) continue;
+        if (IDEMPOTENT[tag] && open[tag]) { walk(n, open); continue; }
         flush();
         out.push(tag + (tag === 'A' ? '[' + deBase(n.getAttribute('href')) + ']' : '') + '(');
-        walk(n);
+        var inner = {};
+        for (var t in open) if (open.hasOwnProperty(t)) inner[t] = open[t];
+        inner[tag] = true;
+        walk(n, inner);
         flush();
         out.push(')');
       }
-    })(el);
+    })(el, {});
     flush();
     return out.join('');
   }
-  function renderedCanonicalOf(doc, md, marked) {
+  // Render `md` into a scratch element once and read both ledgers off it.
+  // Display text and canonical structure are always wanted together, and the
+  // parse is the expensive half.
+  function renderedOf(doc, md, marked) {
     var scratch = doc.createElement('div');
     try { scratch.innerHTML = marked.parse(md); } catch (_) { return null; }
     stripStructuralWhitespace(scratch);
-    return canonicalOfEl(scratch);
+    return { el: scratch, disp: (scratch.textContent || '').replace(/\n+$/, ''), canon: canonicalOfEl(scratch) };
+  }
+  function renderedCanonicalOf(doc, md, marked) {
+    var r = renderedOf(doc, md, marked);
+    return r === null ? null : r.canon;
   }
 
   // Does `cand` still lex as (at most) one block that renders exactly
@@ -1780,47 +2137,78 @@
    */
   function reconcileDomEdit(el, blockToken, marked, base) {
     var doc = el.ownerDocument;
-    var leaves = leafMap(blockToken);
-    var oldDisp = leaves.map(function (L) { return dispShownOf(L.token); }).join('');
+    var src = renderedOf(doc, blockToken.raw, marked);
+    var oldDisp = src === null ? null : src.disp;
     // Read the DOM with WebKit's edge-whitespace artifacts normalized away (see
     // normalizeBoundaryWs). `artifact` records that the live DOM held such an
     // artifact: the source needs no extra content, but the block must still be
     // re-rendered to shed it, so this can't be reported as "unchanged" — that
     // would leave the artifact live and divergent. same() reverts instead,
     // which re-renders the block from source and cleans it.
+    // Whitespace at a block's edge is only an editing artifact if the source
+    // did not put it there. Test the DOM exactly as it stands first: a
+    // paragraph that legitimately begins with a space, or a quote written
+    // "> <spaces>text", matches its own source and is simply clean.
+    // Normalizing before this comparison rewrote those blocks on load —
+    // "  aaa" became "aaa" with nobody typing anything.
+    // One reconciliation attempt against a particular reading of the DOM.
+    // `isArtifact` says this reading differs from what is actually on screen,
+    // so "unchanged" cannot be reported: the block has to be re-rendered to
+    // shed the difference, which same() asks for by refusing.
+    function attempt(readEl, isArtifact) {
+      var wantDisp = (readEl.textContent || '').replace(/\n+$/, '');
+      var wantCanon = canonicalOfEl(readEl, base);
+      function same() { return isArtifact ? null : { changed: false }; }
+      if (oldDisp !== null && wantDisp === oldDisp && src.canon === wantCanon) return same();
+      function accept(cand) {
+        if (cand === blockToken.raw) return same();
+        if (relexMatches(doc, cand, wantDisp, marked) === null) return null;
+        if (renderedCanonicalOf(doc, cand, marked) !== wantCanon) return null;
+        return { changed: true, raw: cand, empty: wantDisp === '' };
+      }
+      var oldBlocks = parseBlocks(blockToken.raw, marked);
+      if (!oldBlocks) return null; // block outside the model — refuse, don't guess
+      var newBlocks = readBlocksFromDom(readEl, base);
+      if (!newBlocks) return null; // DOM structure outside the model
+      var adopted = diffBlocks(oldBlocks, newBlocks);
+      var cand = printBlocks(adopted, marked);
+      var r = accept(cand);
+      if (r) return r;
+      // Adopted provenance can go stale against a heavily-rearranged DOM;
+      // retry once with a fully canonical print before refusing.
+      var canonical = printBlocks(adopted.map(function (b) {
+        return b.kind === 'opaque' ? b : {
+          kind: b.kind, level: b.level, depth: b.depth, marker: b.marker,
+          text: b.text, prov: null, raw: null, sep: b.sep,
+        };
+      }), marked);
+      return canonical === cand ? null : accept(canonical);
+    }
+
+    // Which reading to believe first depends on the source, not the DOM alone.
+    // Edge whitespace the source's own rendering also has is content — "  aaa"
+    // really does begin with two spaces, and "foo  " really does end with the
+    // two that make a hard break; normalizing those away deleted them on the
+    // first edit anywhere in the block. Edge whitespace the source does *not*
+    // account for is WebKit's, and must be shed rather than written to the file.
     var rd = normalizeBoundaryWs(el);
-    var newDisp = (rd.textContent || '').replace(/\n+$/, '');
-    var domCanon = canonicalOfEl(rd, base);
-    var artifact = domCanon !== canonicalOfEl(el, base);
-    function same() { return artifact ? null : { changed: false }; }
-    if (newDisp === oldDisp &&
-        renderedCanonicalOf(doc, blockToken.raw, marked) === domCanon) {
-      return same();
-    }
-    function accept(cand) {
-      if (cand === blockToken.raw) return same();
-      var tok = relexMatches(doc, cand, newDisp, marked);
-      if (tok === null) return null;
-      if (renderedCanonicalOf(doc, cand, marked) !== domCanon) return null;
-      return { changed: true, raw: cand, empty: newDisp === '' };
-    }
-    var oldBlocks = parseBlocks(blockToken.raw, marked);
-    if (!oldBlocks) return null; // block outside the model — refuse, don't guess
-    var newBlocks = readBlocksFromDom(rd, base);
-    if (!newBlocks) return null; // DOM structure outside the model
-    var adopted = diffBlocks(oldBlocks, newBlocks);
-    var cand = printBlocks(adopted, marked);
-    var r = accept(cand);
+    var normalized = canonicalOfEl(rd, base) !== canonicalOfEl(el, base);
+    // Both readings are self-consistent — a paragraph really can end with a
+    // space, a list item really can start with one — so the DOM alone cannot
+    // say which is meant. The source can: normalize its *own* rendering and see
+    // whether that changes anything. If the source has edge whitespace of its
+    // own, the live DOM's is content and normalizing would delete it ("  aaa"
+    // reconciled to "X aaa"; "foo  " lost the two spaces that make it a hard
+    // break). If the source has none, whatever is on screen came from the
+    // editing engine — WebKit's &nbsp; at the head of a list item — and writing
+    // it to the file would plant an invisible character the renderer then
+    // strips back out. This covers edges inside the block, not just its ends.
+    var srcHasEdgeWs = src !== null &&
+      canonicalOfEl(normalizeBoundaryWs(src.el), base) !== canonicalOfEl(src.el, base);
+    if (normalized && !srcHasEdgeWs) return attempt(rd, true);
+    var r = attempt(el, false);
     if (r) return r;
-    // Adopted provenance can go stale against a heavily-rearranged DOM;
-    // retry once with a fully canonical print before refusing.
-    var canonical = printBlocks(adopted.map(function (b) {
-      return b.kind === 'opaque' ? b : {
-        kind: b.kind, level: b.level, depth: b.depth, marker: b.marker,
-        text: b.text, prov: null, raw: null, sep: b.sep,
-      };
-    }), marked);
-    return canonical === cand ? null : accept(canonical);
+    return normalized ? attempt(rd, true) : null;
   }
 
   return {
