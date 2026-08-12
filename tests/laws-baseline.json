@@ -1,0 +1,11 @@
+{
+  "note": "Written by tests/laws.test.mjs. lawfulEditable may only rise; editableUnlawful may only fall. Commit changes to this file with the change that earned them.",
+  "lawfulEditable": 563,
+  "editableUnlawful": 10,
+  "formatLimited": 27,
+  "byLaw": {
+    "L1": 0,
+    "L2": 1,
+    "L3": 9
+  }
+}

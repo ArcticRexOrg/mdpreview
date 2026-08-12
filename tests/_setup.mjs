@@ -25,3 +25,20 @@ export function fixtures() {
 export function fixture(name) {
   return readFileSync(join(fixturesDir, name), 'utf8');
 }
+
+/**
+ * The external corpus the law suite runs on: every markdown input in the
+ * CommonMark spec, plus our own fixtures.
+ *
+ * Deliberately not curated by us. The hand-written suites and the `genBlock`
+ * fuzzer were both written against the shapes the model already handled, which
+ * is why 245 green tests coexisted with task lists and hard line breaks
+ * reverting on every save. A corpus we did not choose is the only kind that
+ * can surface the constructs we forgot.
+ */
+export function corpus() {
+  const spec = JSON.parse(readFileSync(join(fixturesDir, 'commonmark-corpus.json'), 'utf8'));
+  return spec.examples
+    .map((e) => ({ section: e.section, md: e.markdown }))
+    .concat(fixtures().map((f) => ({ section: 'fixture:' + f.name, md: f.md })));
+}
