@@ -1,7 +1,7 @@
 {
-  "note": "Written by tests/laws.test.mjs. lawfulEditable may only rise; editableUnlawful may only fall. Commit changes to this file with the change that earned them.",
+  "note": "Written by tests/laws.test.mjs. lawfulEditable may only rise; editableUnlawful and formatLimited may only fall. Commit changes to this file with the change that earned them.",
   "overrideNote": "Hand-reset when spliceWitness stopped asking our own offset map where to splice and began scanning every source offset. The old oracle shared a bug with the code it judged, so six real defects were certified as limits of markdown. The numbers got worse because the standard got stricter. State under the weaker oracle was 571 lawful / 2 unlawful / 25 format-limited.",
-  "lawfulEditable": 566,
+  "lawfulEditable": 580,
   "editableUnlawful": 7,
   "formatLimited": 22,
   "byLaw": {

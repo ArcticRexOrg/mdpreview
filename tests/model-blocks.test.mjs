@@ -81,11 +81,11 @@ test('ordered list markers carry number and delimiter', () => {
   assert.equal(par.marker.delim, ')');
 });
 
-test('heading and quote parse styled; code/table/hr stay opaque', () => {
+test('heading, quote and table cells parse styled; code/hr stay opaque', () => {
   const md = '## Ti **tle**\n\n> quo *te*\n\n```js\nx\n```\n\n| a |\n|---|\n\n---\n';
   const doc = M.parseDoc(md, marked);
   const kinds = doc.blocks.filter((b) => b.kind !== 'opaque' || b.raw.trim() !== '').map((b) => b.kind);
-  assert.deepEqual(kinds, ['heading', 'quote', 'opaque', 'opaque', 'opaque']);
+  assert.deepEqual(kinds, ['heading', 'quote', 'opaque', 'cell', 'opaque']);
   const h = doc.blocks[0];
   assert.equal(h.level, 2);
   assert.equal(h.text.map((c) => c.ch).join(''), 'Ti tle');

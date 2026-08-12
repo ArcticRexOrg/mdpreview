@@ -26,7 +26,7 @@
   // source bytes pass through verbatim.
   // Tables use a distinct token shape (.header/.rows) the leaf re-serializer
   // doesn't reconstruct, so they stay read-only for now (correct-but-limited).
-  var EDITABLE_BLOCKS = { paragraph: true, heading: true, blockquote: true, list: true };
+  var EDITABLE_BLOCKS = { paragraph: true, heading: true, blockquote: true, list: true, table: true };
 
   function isEditableBlock(token) {
     return EDITABLE_BLOCKS[token.type] === true;
@@ -705,6 +705,107 @@
     return blocks.length ? blocks : null;
   }
 
+  /**
+   * A pipe table as one block per cell.
+   *
+   * Cells are the only part of a table anyone edits; the pipes, the alignment
+   * row and the column padding are scaffolding. So each cell block owns the
+   * source bytes from the end of the previous cell's content up to the end of
+   * its own — `pre` is the scaffolding at the front, kept verbatim — and the
+   * blocks tile the segment exactly, which is what the offset machinery
+   * requires. Editing a cell reprints that cell and nothing else; the table's
+   * shape on disk survives untouched, padding and all.
+   *
+   * The split is done over the source and then *checked* against marked's own
+   * cell texts, rather than trusted. Splitting on pipes is not quite a lexer —
+   * escaped pipes and pipes inside code spans do not divide cells — so where
+   * our reading disagrees with marked's we return null and the table stays
+   * read-only, which is the safe direction.
+   */
+  function parseTableBlocks(segRaw, token, marked) {
+    var want = [];
+    var h = token.header || [], rows = token.rows || [], i, j;
+    for (i = 0; i < h.length; i++) want.push(h[i].text);
+    for (i = 0; i < rows.length; i++) for (j = 0; j < rows[i].length; j++) want.push(rows[i][j].text);
+    if (!want.length) return null;
+
+    var blocks = [], pos = 0, wi = 0, pendingPre = '';
+    var lines = segRaw.split('\n');
+    for (var li = 0; li < lines.length; li++) {
+      var line = lines[li];
+      var lineStart = pos;
+      pos += line.length + (li < lines.length - 1 ? 1 : 0);
+      // The alignment row and any trailing blank line are scaffolding: hand
+      // their bytes to the next cell as prefix, or to the document as the last
+      // cell's separator.
+      var isDelim = /^[ \t]*\|?[ \t]*:?-+:?[ \t]*(\|[ \t]*:?-+:?[ \t]*)*\|?[ \t]*$/.test(line);
+      if (isDelim || !line.trim() || wi >= want.length) {
+        pendingPre += segRaw.slice(lineStart, pos);
+        continue;
+      }
+      // Split the row on unescaped pipes, keeping every byte.
+      var parts = [], cur = '', k;
+      for (k = 0; k < line.length; k++) {
+        var ch = line.charAt(k);
+        if (ch === '\\' && k + 1 < line.length) { cur += ch + line.charAt(++k); continue; }
+        if (ch === '|') { parts.push(cur); cur = ''; continue; }
+        cur += ch;
+      }
+      parts.push(cur);
+      // A leading or trailing pipe produces an empty outer part that is not a
+      // cell; it belongs to the scaffolding.
+      var lead = '', trail = '';
+      if (parts.length > 1 && !parts[0].trim()) { lead = parts.shift() + '|'; }
+      if (parts.length > 1 && !parts[parts.length - 1].trim()) { trail = '|' + parts.pop(); }
+
+      for (k = 0; k < parts.length; k++) {
+        if (wi >= want.length) return null;
+        var cellRaw = parts[k];
+        var lm = /^[ \t]*/.exec(cellRaw)[0], tm = /[ \t]*$/.exec(cellRaw)[0];
+        var content = cellRaw.slice(lm.length, cellRaw.length - tm.length);
+        // marked reports a cell's text with its escaped pipes already
+        // unescaped, since only an unescaped one divides cells. Compare on
+        // those terms; the model still parses the source form, where "\|" is an
+        // ordinary escape and shows the same character.
+        if (content.replace(/\\\|/g, '|') !== want[wi]) return null; // our split is not marked's
+        var pr = parseInline(content, marked);
+        if (!pr) return null;
+        // The cell must show what marked says it shows. GFM strips the escape
+        // from "\|" before parsing the cell's inlines, so inside a code span —
+        // where a backslash is otherwise literal — our reading of the source
+        // and marked's reading of the cell diverge. Comparing the two parses
+        // catches exactly that case and leaves the table read-only, instead of
+        // handing back a model whose text is one character off from the screen.
+        var pw = parseInline(want[wi], marked);
+        if (!pw || !textEqM(pr.text, pw.text)) return null;
+        var prefix = pendingPre + (k === 0 ? lead : '|') + lm;
+        blocks.push({
+          kind: 'cell', text: pr.text, prov: pr.prov,
+          raw: prefix + content, pre: prefix, sep: '',
+        });
+        wi++;
+        // This cell's trailing padding rides on the next cell's prefix, so the
+        // blocks tile the source without gaps.
+        pendingPre = tm;
+      }
+      pendingPre += trail + (li < lines.length - 1 ? '\n' : '');
+    }
+    if (wi !== want.length || !blocks.length) return null;
+    // The table's tail — the closing pipe, its padding, the newline — belongs to
+    // the last cell twice over: inside `raw`, which the printer emits verbatim
+    // while the cell is untouched, and in `sep`, which it appends when the cell
+    // has been reprinted. Keeping it in only one of the two loses those bytes
+    // down whichever path is not taken.
+    var last = blocks[blocks.length - 1];
+    last.sep = pendingPre;
+    last.raw += pendingPre;
+    // The blocks must account for every byte of the segment, or every offset
+    // downstream of the table drifts.
+    var total = '';
+    for (i = 0; i < blocks.length; i++) total += blocks[i].raw;
+    return total === segRaw ? blocks : null;
+  }
+
   function parseBlocks(segRaw, marked) {
     var token;
     try { token = marked.lexer(segRaw)[0]; } catch (_) { return null; }
@@ -735,6 +836,8 @@
         content = segRaw.replace(/\n+$/, '');
         return [{ kind: 'quote', text: pr.text, prov: pr.prov, raw: segRaw, sep: segRaw.slice(content.length) }];
       }
+      case 'table':
+        return parseTableBlocks(segRaw, token, marked);
       case 'list':
         return parseListBlocks(segRaw, marked);
       default:
@@ -782,6 +885,22 @@
     if (ch != null) {
       local = ch >= b.text.length ? inline.length : parts.pos[ch];
       if (local == null) local = inline.length;
+    }
+    if (b.kind === 'cell') {
+      // Everything before the content is table scaffolding — pipes, padding,
+      // the alignment row that preceded this cell — and is reproduced byte for
+      // byte. Only the cell's own text is reprinted, so editing one cell never
+      // reflows the table on disk.
+      var cpre = b.pre != null ? b.pre : '|';
+      // A literal pipe would divide the cell in two, so every unescaped one is
+      // escaped on the way out. GFM applies the escape before inline parsing,
+      // so this is right inside a code span as well — `a \| b` shows "a | b".
+      var esc = '', shift = 0;
+      for (var ci = 0; ci < inline.length; ci++) {
+        if (inline.charAt(ci) === '|') { esc += '\\|'; if (local >= 0 && ci < local) shift++; }
+        else esc += inline.charAt(ci);
+      }
+      return { s: cpre + esc, pos: local >= 0 ? cpre.length + local + shift : -1 };
     }
     if (b.kind === 'heading') {
       // Two things ATX cannot hold, both of which setext can. A newline: ATX is
@@ -1073,6 +1192,26 @@
       return true;
     }
 
+    // Cells in document order — header first, then each row. Only their text
+    // is read: the table's shape stays whatever the source says, so a cell
+    // added or removed in the DOM is a structure change we decline rather than
+    // guess at (the block counts will not match and the edit is refused).
+    function readTable(tableEl) {
+      var rows = tableEl.getElementsByTagName('tr');
+      for (var r = 0; r < rows.length; r++) {
+        for (var c = rows[r].firstChild; c; c = c.nextSibling) {
+          if (c.nodeType === 3) { if (/^\s*$/.test(c.textContent)) continue; return false; }
+          if (c.nodeType !== 1) continue;
+          var t = c.tagName.toUpperCase();
+          if (t !== 'TD' && t !== 'TH') return false;
+          var ct = [];
+          if (!readInline(c, ct)) return false;
+          blocks.push({ kind: 'cell', text: ct, prov: null, raw: null, pre: null, sep: '' });
+        }
+      }
+      return true;
+    }
+
     function walk(container) {
       for (var n = container.firstChild; n; n = n.nextSibling) {
         if (n.nodeType === 3) { if (/^\s*$/.test(n.textContent)) continue; return false; }
@@ -1101,6 +1240,8 @@
           var qt = [];
           if (ps.length && !readInline(ps[0], qt)) return false;
           blocks.push({ kind: 'quote', text: qt, prov: null, raw: null, sep: null });
+        } else if (tag === 'TABLE') {
+          if (!readTable(n)) return false;
         } else if (tag === 'UL' || tag === 'OL') {
           if (!readList(n, 0)) return false;
         } else if (!subtreeVisible(n)) {
@@ -1127,6 +1268,7 @@
   // (markers aren't in the DOM) and matches anything of the right orderedness.
   function blockStructEq(o, n) {
     if (o.kind !== n.kind) return false;
+    if (o.kind === 'cell') return true; // a cell's identity is its position
     if (o.kind === 'heading' && o.level !== n.level) return false;
     if (o.kind === 'listItem') {
       if (o.depth !== n.depth) return false;
@@ -1184,6 +1326,7 @@
       };
       if (ob && blockStructEq(ob, nb)) {
         adopted.prov = ob.prov;
+        if (nb.kind === 'cell') adopted.pre = ob.pre; // scaffolding is not in the DOM
         adopted.sep = ob.sep != null ? ob.sep : '\n';
         adopted.marker = nb.marker || ob.marker;
       } else {
@@ -1441,6 +1584,7 @@
       var hm = (b.raw || '').match(/^#{1,6}[ \t]+/);
       return hm ? hm[0].length : 0;
     }
+    if (b.kind === 'cell') return (b.pre || '').length;
     return 0;
   }
 
@@ -2252,7 +2396,7 @@
       // retry once with a fully canonical print before refusing.
       var canonical = printBlocks(adopted.map(function (b) {
         return b.kind === 'opaque' ? b : {
-          kind: b.kind, level: b.level, depth: b.depth, marker: b.marker,
+          kind: b.kind, level: b.level, depth: b.depth, marker: b.marker, pre: b.pre,
           text: b.text, prov: null, raw: null, sep: b.sep,
         };
       }), marked);

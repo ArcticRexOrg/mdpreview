@@ -116,6 +116,17 @@ test('zombie empty inline elements and empty <p> are ignored', () => {
 });
 
 test('readback refuses out-of-model structure with null', () => {
-  const { el } = renderSeg('| a | b |\n|---|---|\n| 1 | 2 |\n');
+  const { el } = renderSeg('<div><span>x</span></div>\n');
   assert.equal(M.readBlocksFromDom(el), null);
+});
+
+// Tables read back as one block per cell, in document order. Only the text is
+// taken: pipes, padding and the alignment row are not in the DOM to be read,
+// and stay whatever the source said.
+test('readback reads a table as its cells', () => {
+  const { el } = renderSeg('| a | b |\n|---|---|\n| 1 | 2 |\n');
+  const blocks = M.readBlocksFromDom(el);
+  assert.equal(blocks.length, 4);
+  assert.ok(blocks.every((b) => b.kind === 'cell'));
+  assert.deepEqual(blocks.map((b) => b.text.map((c) => c.ch).join('')), ['a', 'b', '1', '2']);
 });

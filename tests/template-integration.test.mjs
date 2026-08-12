@@ -456,3 +456,59 @@ test('a disk change with real unsaved edits still merges and persists', async ()
   t.win.saveNow();
   assert.equal(t.saved(), 'alphaX\n\nbravo2\n', 'local edit and disk edit both survive');
 });
+
+// --- table cells ------------------------------------------------------------
+// Cells are the only editable part of a table. The scaffolding — pipes,
+// alignment row, column padding — is reproduced byte for byte, so editing one
+// cell must not reflow the table on disk.
+
+test('a table is offered for editing', async () => {
+  const t = await setup('| A | B |\n|---|---|\n| x | y |\n');
+  const div = t.doc.querySelector('#content [data-seg]');
+  assert.equal(div.getAttribute('contenteditable'), 'true');
+  assert.ok(div.querySelector('table'));
+});
+
+test('typing in a cell rewrites that cell and nothing else', async () => {
+  const md = '| Col A | Col B |\n|-------|-------|\n| one   | two   |\n';
+  const t = await setup(md);
+  const cell = Array.from(t.doc.querySelectorAll('td')).find((c) => c.textContent === 'one');
+  cell.firstChild.textContent = 'once';           // WebKit's insertion, simulated
+  t.win.flushActive();
+  assert.equal(t.md(), '| Col A | Col B |\n|-------|-------|\n| once   | two   |\n');
+});
+
+test('editing a header cell keeps the alignment row intact', async () => {
+  const md = '|Left|Right|\n|:---|----:|\n|a|b|\n';
+  const t = await setup(md);
+  const th = t.doc.querySelectorAll('th')[1];
+  th.firstChild.textContent = 'Right side';
+  t.win.flushActive();
+  assert.equal(t.md(), '|Left|Right side|\n|:---|----:|\n|a|b|\n');
+});
+
+test('an escaped pipe in a cell survives an edit to its neighbour', async () => {
+  const md = '| Expression | Meaning |\n| --- | --- |\n| x \\| y | alternation |\n';
+  const t = await setup(md);
+  const cell = Array.from(t.doc.querySelectorAll('td')).find((c) => c.textContent === 'alternation');
+  cell.firstChild.textContent = 'or';
+  t.win.flushActive();
+  assert.equal(t.md(), '| Expression | Meaning |\n| --- | --- |\n| x \\| y | or |\n');
+});
+
+test('emphasis inside a cell is preserved when other text changes', async () => {
+  const md = '| Item | Notes |\n| --- | --- |\n| **bold** | plain |\n';
+  const t = await setup(md);
+  const cell = Array.from(t.doc.querySelectorAll('td')).find((c) => c.textContent === 'plain');
+  cell.firstChild.textContent = 'plainer';
+  t.win.flushActive();
+  assert.equal(t.md(), '| Item | Notes |\n| --- | --- |\n| **bold** | plainer |\n');
+});
+
+test('an untouched table is never rewritten', async () => {
+  const md = '|a|b|\n|-|-|\n|1|2|\n\nAfter.\n';
+  const t = await setup(md);
+  t.win.flushActive();
+  assert.equal(t.md(), md);
+  assert.equal(t.saved(), null);
+});
