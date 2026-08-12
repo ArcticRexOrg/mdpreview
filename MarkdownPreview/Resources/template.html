@@ -1438,17 +1438,49 @@
             }
         }
 
+        // An exception inside an event listener is reported to the console and
+        // then dropped: the browser carries on, the handler's remaining work
+        // never runs, and the editor is left half-updated — a block flushed but
+        // not re-rendered, an undo checkpoint pushed against a document that
+        // moved underneath it. Nothing reaches editor.log, so the report that
+        // comes back is "editing went strange" with no trace to read. Wrapping
+        // every listener means the failure is at least written down, with the
+        // block it happened in, before the DOM is put back to a known state.
+        function guarded(name, fn) {
+            return function (ev) {
+                try {
+                    return fn(ev);
+                } catch (e) {
+                    var where = '';
+                    try {
+                        var sel = window.getSelection();
+                        var div = sel && sel.rangeCount ? segDivFor(sel.anchorNode) : null;
+                        if (div) where = ' seg=' + segIndexOf(div);
+                    } catch (_) {}
+                    elog('HANDLER ' + name + ' THREW' + where + ' — ' + (e && e.message ? e.message : e) +
+                         (e && e.stack ? ' | ' + String(e.stack).split('\n').slice(0, 3).join(' <- ') : ''));
+                    // Put the block back to its last known-good source rather
+                    // than leaving whatever the half-finished handler left.
+                    try {
+                        var sel2 = window.getSelection();
+                        var d2 = sel2 && sel2.rangeCount ? segDivFor(sel2.anchorNode) : null;
+                        if (d2 && _segments[segIndexOf(d2)]) revertSeg(d2);
+                    } catch (_) {}
+                }
+            };
+        }
+
         function bindEditingListeners(content) {
             if (_listenersBound) return;
-            content.addEventListener('beforeinput', onBeforeInput);
-            content.addEventListener('keydown', onKeydown);
-            content.addEventListener('paste', onPaste);
-            content.addEventListener('blur', onBlur, true);
-            content.addEventListener('mousedown', onMouseDown);
-            document.addEventListener('keydown', onDocKeydown, true);
-            document.addEventListener('selectionchange', onSelectionChange);
-            document.addEventListener('mousemove', onMouseMove);
-            document.addEventListener('mouseup', onMouseUp);
+            content.addEventListener('beforeinput', guarded('beforeinput', onBeforeInput));
+            content.addEventListener('keydown', guarded('keydown', onKeydown));
+            content.addEventListener('paste', guarded('paste', onPaste));
+            content.addEventListener('blur', guarded('blur', onBlur), true);
+            content.addEventListener('mousedown', guarded('mousedown', onMouseDown));
+            document.addEventListener('keydown', guarded('dockeydown', onDocKeydown), true);
+            document.addEventListener('selectionchange', guarded('selectionchange', onSelectionChange));
+            document.addEventListener('mousemove', guarded('mousemove', onMouseMove));
+            document.addEventListener('mouseup', guarded('mouseup', onMouseUp));
             _listenersBound = true;
         }
 

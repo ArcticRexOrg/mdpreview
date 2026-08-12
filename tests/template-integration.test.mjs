@@ -32,13 +32,18 @@ async function setup(md) {
   win.matchMedia = win.matchMedia || (() => ({ matches: false, addListener() {}, removeListener() {} }));
   win.scrollTo = () => {};
   let saved = null;
-  win.webkit = { messageHandlers: { documentEdited: { postMessage(m) { saved = m; } }, paginationDone: { postMessage() {} } } };
+  const log = [];
+  win.webkit = { messageHandlers: {
+    documentEdited: { postMessage(m) { saved = m; } },
+    paginationDone: { postMessage() {} },
+    editorLog: { postMessage(m) { log.push(m); } },
+  } };
   win.eval(scriptSrc);
   win._rawMarkdown = md;
   win._baseMarkdown = md;
   await win.renderReading(); // await so editing listeners (bound after the await) are live
   return {
-    win, doc: win.document,
+    win, doc: win.document, log,
     seg: () => win.document.querySelector('#content [data-seg]'),
     md: () => win.currentMarkdown(),
     saved: () => saved,
@@ -511,4 +516,35 @@ test('an untouched table is never rewritten', async () => {
   t.win.flushActive();
   assert.equal(t.md(), md);
   assert.equal(t.saved(), null);
+});
+
+// --- handler failures are recorded ------------------------------------------
+// An exception inside an event listener is reported to the console and then
+// dropped by the browser, so a half-finished handler used to leave the editor
+// in an odd state with nothing in editor.log to explain it.
+
+test('an exception in a handler is logged with the block it happened in', async () => {
+  const t = await setup('- one\n- two\n');
+  t.win.splitBlockAt = null;                      // sabotage the split path
+  const orig = t.win.EditorCore.splitBlock;
+  t.win.EditorCore.splitBlock = () => { throw new Error('boom'); };
+  caret(t.win, { text: 'two', at: 3 });
+  beforeInput(t.win, 'insertParagraph');
+  t.win.EditorCore.splitBlock = orig;
+  const logged = t.log.filter((l) => l.startsWith('HANDLER'));
+  assert.equal(logged.length, 1, `expected one handler failure, got ${JSON.stringify(t.log.slice(-4))}`);
+  assert.match(logged[0], /beforeinput THREW/);
+  assert.match(logged[0], /boom/);
+  assert.match(logged[0], /seg=\d/);
+});
+
+test('the document survives a handler that throws', async () => {
+  const md = '- one\n- two\n';
+  const t = await setup(md);
+  const orig = t.win.EditorCore.splitBlock;
+  t.win.EditorCore.splitBlock = () => { throw new Error('boom'); };
+  caret(t.win, { text: 'two', at: 3 });
+  beforeInput(t.win, 'insertParagraph');
+  t.win.EditorCore.splitBlock = orig;
+  assert.equal(t.md(), md, 'source must be unchanged after a failed handler');
 });

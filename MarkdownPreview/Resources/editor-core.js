@@ -1781,44 +1781,7 @@
 
   var SHOW_TEXT = 4; // NodeFilter.SHOW_TEXT
 
-  function dispTextOf(token) { return token.text !== undefined ? token.text : token.raw; }
-  // What a leaf contributes to the DOM's textContent. An image contributes
-  // nothing — its alt lives in an attribute — so for display-offset purposes
-  // its width is zero, or every mapping past an image skews by the alt length.
-  function dispShownOf(token) { return token.type === 'image' ? '' : dispTextOf(token); }
 
-  // Ordered leaves of a block with source (raw) and display spans. Positions are
-  // found by forward-searching each leaf's raw in the block source directly —
-  // NOT by composing offsets down the token tree. Composition breaks for nested
-  // lists because marked strips a nested block's leading indentation from its
-  // raw, so child raws don't tile the parent. A leaf's own raw (text, codespan,
-  // escape) always appears verbatim in the source, so a left-to-right scan locates
-  // it correctly at any nesting depth.
-  function leafMap(blockToken) {
-    var leaves = [];
-    (function walk(token) {
-      // An image is opaque: its child text token is the alt, which is an
-      // attribute in the DOM, not visible text. Descending would count it.
-      if (token.type === 'image') { leaves.push({ token: token, type: 'image' }); return; }
-      var kids = childrenOf(token);
-      if (!kids) { leaves.push({ token: token, type: token.type }); return; }
-      for (var i = 0; i < kids.length; i++) walk(kids[i]);
-    })(blockToken);
-    var src = blockToken.raw, search = 0, disp = 0;
-    for (var j = 0; j < leaves.length; j++) {
-      var raw = leaves[j].token.raw;
-      var idx = src.indexOf(raw, search);
-      if (idx < 0) idx = search; // best effort — should not happen for leaf raws
-      leaves[j].rawStart = idx;
-      leaves[j].rawEnd = idx + raw.length;
-      search = idx + raw.length;
-      var len = dispShownOf(leaves[j].token).length;
-      leaves[j].dispStart = disp;
-      leaves[j].dispEnd = disp + len;
-      disp += len;
-    }
-    return leaves;
-  }
 
   // Display offset of (node, offset) within el — text length from el's start.
   function displayOffset(el, node, offset) {
@@ -1877,16 +1840,6 @@
     return nodes;
   }
 
-  // Display start offset of `node` (sum of prior text nodes' lengths), or -1 if
-  // it isn't one of el's text nodes.
-  function nodeDispStart(nodes, node) {
-    var acc = 0;
-    for (var i = 0; i < nodes.length; i++) {
-      if (nodes[i] === node) return acc;
-      acc += nodes[i].textContent.length;
-    }
-    return -1;
-  }
 
   // The (node, offset) at a linear display offset, biased to the node that
   // *starts* at the offset (preferStart) or *ends* at it. This is what tells
@@ -2041,64 +1994,20 @@
       if (preferNext && coords.srcEndOfChar[ci] !== undefined) return coords.srcEndOfChar[ci];
       return coords.srcOfChar[ci];
     }
-    return legacyDomOffsetToSourceOffset(el, node, offset, blockToken, bias);
+    // No coordinate map: either a transient block with no source at all (a
+    // just-created empty paragraph) or an intermediate state of a structural
+    // op whose source does not lex as the block it is standing in for — an
+    // item indented past four spaces reads as a code block. Neither is ever
+    // offered to the user for editing. Treat display and source as the same
+    // axis, which is exact for plain text and the best available guess
+    // otherwise; the old token-scanning ledger that used to live here was not
+    // better, only longer, and kept a second model alive to be maintained.
+    return blockToken && blockToken.raw != null
+      ? Math.min(displayOffset(el, node, offset), blockToken.raw.length)
+      : displayOffset(el, node, offset);
   }
 
-  // The old ledger, still reached in one place: the structural ops (split,
-  // indent, outdent) restore the caret through intermediate sources such as
-  // "    * b" or "- ab\n      - c", which blockCoords declines to map, so
-  // coordsOf comes back empty and this runs instead. Those states are never
-  // offered to the user for editing — they exist for a moment inside one
-  // operation — but until they are modelled this file still contains two
-  // ledgers, and only one of them is measured by the law suite. Deleting this
-  // is the last step of the migration, not a step already taken.
-  function legacyDomOffsetToSourceOffset(el, node, offset, blockToken, bias) {
-    var leaves = leafMap(blockToken);
-    // Caret parked in an empty block element (empty <li>): map to the paired
-    // zero-width leaf's source position.
-    if (node && node.nodeType === 1) {
-      var empties = emptyBlockEls(el), idx = empties.indexOf(node), seen = 0;
-      if (idx >= 0) {
-        for (var e = 0; e < leaves.length; e++) {
-          if (leaves[e].dispStart !== leaves[e].dispEnd) continue;
-          if (seen === idx) return leaves[e].rawStart;
-          seen++;
-        }
-      }
-    }
-    var nodes = textNodesOf(el);
-    var tnStart = nodeDispStart(nodes, node);
-    if (tnStart < 0) { // caret not in a known text node — linear fallback
-      var target = displayOffset(el, node, offset);
-      return resolveDisp(leaves, target, bias === 'start' ? true : bias === 'end' ? false : true);
-    }
-    var nodeLen = node.textContent.length;
-    var off = Math.max(0, Math.min(offset, nodeLen));
-    var dispPos = tnStart + off;
-    var preferNext = bias === 'start' ? true : bias === 'end' ? false : (off <= 0);
-    return resolveDisp(leaves, dispPos, preferNext);
-  }
 
-  // Map a linear display offset to a source offset, choosing the following leaf
-  // (preferNext) or preceding leaf at a boundary.
-  function resolveDisp(leaves, dispPos, preferNext) {
-    var endsHere = null, startsHere = null;
-    for (var i = 0; i < leaves.length; i++) {
-      var L = leaves[i];
-      if (dispPos > L.dispStart && dispPos < L.dispEnd) { // strictly interior
-        return L.type === 'text' ? L.rawStart + (dispPos - L.dispStart)
-          : (dispPos <= L.dispStart ? L.rawStart : L.rawEnd);
-      }
-      if (L.dispEnd === dispPos) endsHere = L;
-      if (L.dispStart === dispPos && !startsHere) startsHere = L;
-    }
-    if (preferNext && startsHere) return startsHere.rawStart;
-    if (!preferNext && endsHere) return endsHere.rawEnd;
-    if (startsHere) return startsHere.rawStart;
-    if (endsHere) return endsHere.rawEnd;
-    if (leaves.length && dispPos <= leaves[0].dispStart) return leaves[0].rawStart;
-    return leaves.length ? leaves[leaves.length - 1].rawEnd : 0;
-  }
 
   // --- Cross-block arrow navigation ----------------------------------------
   //
@@ -2128,7 +2037,7 @@
   // Empty editable block elements (e.g. an empty <li> from a just-created list
   // item) in document order. They host a caret but have no text node, so they
   // can't be reached through the display-offset machinery; they pair, in order,
-  // with the zero-width leaves leafMap emits for empty items.
+  // with the textless blocks the model reports for those items.
   function emptyBlockEls(el) {
     var out = [];
     Array.prototype.forEach.call(el.querySelectorAll('li,p'), function (e) {
@@ -2161,34 +2070,9 @@
       var atStart = coords.srcEndOfChar[ci] === undefined || s >= coords.srcEndOfChar[ci];
       return locateDisp(textNodesOf(el), dispPos, atStart);
     }
-    return legacySourceOffsetToDom(el, srcOffset, blockToken);
+    return locateDisp(textNodesOf(el), Math.max(0, srcOffset), true);
   }
 
-  function legacySourceOffsetToDom(el, srcOffset, blockToken) {
-    var leaves = leafMap(blockToken);
-    var nodes = textNodesOf(el);
-    for (var i = 0; i < leaves.length; i++) {
-      var L = leaves[i];
-      if (L.dispStart === L.dispEnd) continue; // empty leaf — handled below
-      if (srcOffset >= L.rawStart && srcOffset <= L.rawEnd) {
-        var atStart = srcOffset <= L.rawStart;
-        var dispPos = L.type === 'text' ? L.dispStart + (srcOffset - L.rawStart) : (atStart ? L.dispStart : L.dispEnd);
-        return locateDisp(nodes, dispPos, atStart);
-      }
-    }
-    // Empty item: pair the j-th zero-width leaf with the j-th empty element.
-    var empties = emptyBlockEls(el), j = 0;
-    for (var k = 0; k < leaves.length; k++) {
-      var E = leaves[k];
-      if (E.dispStart !== E.dispEnd) continue;
-      var next = (k + 1 < leaves.length) ? leaves[k + 1].rawStart : Infinity;
-      if (srcOffset >= E.rawStart && srcOffset < next && empties[j]) return { node: empties[j], offset: 0 };
-      j++;
-    }
-    if (leaves.length && srcOffset <= leaves[0].rawStart) return locateDisp(nodes, 0, true);
-    var lastDisp = leaves.length ? leaves[leaves.length - 1].dispEnd : 0;
-    return locateDisp(nodes, lastDisp, false);
-  }
 
   // --- Generalized DOM edit reconciliation ----------------------------------
   //
@@ -2288,16 +2172,21 @@
   }
 
   // Visible text a markdown fragment renders to — the editor's convergence
-  // currency: source and DOM agree iff their display texts are equal.
+  // currency: source and DOM agree iff their display texts are equal. Read off
+  // the model, so there is no second opinion about what a construct shows.
+  // Blocks the model refuses contribute nothing, which is what the one caller
+  // wants: the emphasis toggle compares a fragment against itself before and
+  // after, and a toggle that pushed the block out of the model must be refused.
   function displayTextOf(md, marked) {
-    var toks;
-    try { toks = marked.lexer(md); } catch (_) { return null; }
-    var disp = '';
-    for (var i = 0; i < toks.length; i++) {
-      if (toks[i].type === 'space') continue;
-      disp += leafMap(toks[i]).map(function (L) { return dispShownOf(L.token); }).join('');
+    var parsed;
+    try { parsed = parseDoc(md, marked); } catch (_) { return null; }
+    var out = '';
+    for (var i = 0; i < parsed.blocks.length; i++) {
+      var t = parsed.blocks[i].text;
+      if (!t) continue;
+      for (var j = 0; j < t.length; j++) if (!t[j].obj) out += t[j].ch;
     }
-    return disp;
+    return out;
   }
 
   /**
