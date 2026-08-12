@@ -173,6 +173,30 @@
         #content .seg { outline: none; }
         #content .seg[contenteditable="true"]:focus { outline: none; }
 
+        /* A block demoted to read-only (its display↔source map can't be
+           trusted) is indistinguishable from an editable one until a click
+           goes dead. Reveal it on hover: a faint dashed outline plus a small
+           label, greys only so both themes work. */
+        #content .seg-readonly:hover {
+            outline: 1px dashed rgba(127, 127, 127, 0.5);
+            outline-offset: 4px;
+            cursor: default;
+            position: relative;
+        }
+        #content .seg-readonly:hover::after {
+            content: 'read-only';
+            position: absolute;
+            top: -1.4em;
+            right: 0;
+            font-size: 11px;
+            line-height: 1;
+            padding: 2px 6px;
+            border-radius: 3px;
+            color: rgba(127, 127, 127, 0.9);
+            background: rgba(127, 127, 127, 0.12);
+            pointer-events: none;
+        }
+
         /* Cross-block (copy-only) selection: the macOS inactive-selection
            grey signals "selected, but not live for typing" — in-block
            selections keep the native editing blue. */
@@ -409,6 +433,15 @@
                     return;
                 }
                 div.setAttribute('contenteditable', (editing && seg.editable) ? 'true' : 'false');
+                // A text-like block that WOULD be editable but was demoted —
+                // its display↔source map couldn't be trusted — looks identical
+                // to an editable one, so a dead click reads as a broken editor.
+                // Mark it so hover explains itself; inherently read-only blocks
+                // (code, mermaid, hr) stay unadorned.
+                if (editing && !seg.editable && seg.token && EditorCore.isEditableBlock(seg.token)) {
+                    div.classList.add('seg-readonly');
+                    div.setAttribute('title', 'Read-only: this block’s markdown can’t be safely edited in place');
+                }
                 div.innerHTML = renderSegment(seg);
                 EditorCore.stripStructuralWhitespace(div);
                 content.appendChild(div);

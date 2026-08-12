@@ -690,3 +690,24 @@ test('tables with empty cells are editable and fold edits', async () => {
   assert.ok(!t.log.some((l) => l.includes('REVERT') || l.includes('FAILED')),
     `no revert, got: ${JSON.stringify(t.log.slice(-3))}`);
 });
+
+// A demoted block (would be editable, but its offset map can't be trusted)
+// must announce itself instead of silently eating clicks; inherently
+// read-only blocks (code fences) stay unadorned.
+test('demoted blocks are marked seg-readonly, inherent ones are not', async () => {
+  // The blockquote whose text marked re-indents is a known format-limited
+  // (demoted) shape; the code fence is inherently read-only.
+  const t = await setup('> foo\n    - bar\n\n```\ncode\n```\n\nplain text\n');
+  const segs = [...t.doc.querySelectorAll('[data-seg]')];
+  const demoted = segs.filter((d) => d.classList.contains('seg-readonly'));
+  const editable = segs.filter((d) => d.getAttribute('contenteditable') === 'true');
+  for (const d of demoted) {
+    assert.equal(d.getAttribute('contenteditable'), 'false', 'marked blocks are read-only');
+    assert.ok(d.getAttribute('title'), 'marked blocks explain themselves');
+  }
+  const code = segs.find((d) => d.querySelector('pre'));
+  assert.ok(code, 'code fence rendered');
+  assert.ok(!code.classList.contains('seg-readonly'), 'code fence is not marked');
+  assert.ok(editable.length >= 1, 'plain paragraph stays editable');
+  assert.ok(demoted.length >= 1, `expected a demoted block in this doc, got ${segs.map((d) => d.getAttribute('contenteditable'))}`);
+});
