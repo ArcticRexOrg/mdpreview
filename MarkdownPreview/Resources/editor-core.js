@@ -1154,20 +1154,42 @@
     })(container);
     return out;
   }
-  function normalizeBoundaryWs(el) {
-    var clone = el.cloneNode(true);
+  function edgeContainersOf(root) {
     var conts = [];
-    if (/^(H[1-6]|P|LI)$/.test((clone.tagName || '').toUpperCase())) conts.push(clone);
-    if (clone.querySelectorAll) {
-      var found = clone.querySelectorAll(EDGE_TRIM_SEL);
+    if (/^(H[1-6]|P|LI)$/.test((root.tagName || '').toUpperCase())) conts.push(root);
+    if (root.querySelectorAll) {
+      var found = root.querySelectorAll(EDGE_TRIM_SEL);
       for (var i = 0; i < found.length; i++) conts.push(found[i]);
     }
+    return conts;
+  }
+  // With `srcEl` given, an edge is trimmed only where srcEl's corresponding
+  // container has no whitespace at that same edge. The whitespace decision must
+  // be per-edge, not block-global: one item can legitimately end in a
+  // source-held space ("**chalie** ") while WebKit strands an &nbsp; at another
+  // item's edge — an all-or-nothing reading makes that block permanently
+  // unreconcilable. Containers are matched by position; when the two structures
+  // disagree (an edit is reshaping the block), fall back to trimming
+  // everything — the caller's acceptance checks still gate the result.
+  function normalizeBoundaryWs(el, srcEl) {
+    var clone = el.cloneNode(true);
+    var conts = edgeContainersOf(clone);
+    var srcConts = srcEl ? edgeContainersOf(srcEl) : null;
+    var aligned = srcConts !== null && srcConts.length === conts.length;
     for (var c = 0; c < conts.length; c++) {
       var items = edgeItems(conts[c]);
       if (!items.length) continue;
       var first = items[0], last = items[items.length - 1];
-      if (first.nodeType === 3) first.textContent = first.textContent.replace(/^\s+/, '');
-      if (last.nodeType === 3) last.textContent = last.textContent.replace(/\s+$/, '');
+      var keepLead = false, keepTail = false;
+      if (aligned) {
+        var sItems = edgeItems(srcConts[c]);
+        var sFirst = sItems.length ? sItems[0] : null;
+        var sLast = sItems.length ? sItems[sItems.length - 1] : null;
+        keepLead = !!(sFirst && sFirst.nodeType === 3 && /^\s/.test(sFirst.textContent));
+        keepTail = !!(sLast && sLast.nodeType === 3 && /\s$/.test(sLast.textContent));
+      }
+      if (first.nodeType === 3 && !keepLead) first.textContent = first.textContent.replace(/^\s+/, '');
+      if (last.nodeType === 3 && !keepTail) last.textContent = last.textContent.replace(/\s+$/, '');
     }
     return clone;
   }
@@ -2306,11 +2328,13 @@
     var src = renderedOf(doc, blockToken.raw, marked);
     var oldDisp = src === null ? null : src.disp;
     // Read the DOM with WebKit's edge-whitespace artifacts normalized away (see
-    // normalizeBoundaryWs). `artifact` records that the live DOM held such an
-    // artifact: the source needs no extra content, but the block must still be
-    // re-rendered to shed it, so this can't be reported as "unchanged" — that
-    // would leave the artifact live and divergent. same() reverts instead,
-    // which re-renders the block from source and cleans it.
+    // normalizeBoundaryWs). `artifact: true` on a changed:false result records
+    // that the live DOM holds such an artifact: the source needs no extra
+    // content, but the DOM and source have not converged — the caller marks
+    // the block for re-render, which sheds the artifact once no live caret
+    // depends on it. (This used to be reported as a refusal so the revert
+    // would clean it; a revert destroys the caret and any keystroke in
+    // flight, which is far worse than a stranded space.)
     // Whitespace at a block's edge is only an editing artifact if the source
     // did not put it there. Test the DOM exactly as it stands first: a
     // paragraph that legitimately begins with a space, or a quote written
@@ -2319,12 +2343,12 @@
     // "  aaa" became "aaa" with nobody typing anything.
     // One reconciliation attempt against a particular reading of the DOM.
     // `isArtifact` says this reading differs from what is actually on screen,
-    // so "unchanged" cannot be reported: the block has to be re-rendered to
-    // shed the difference, which same() asks for by refusing.
+    // so plain "unchanged" cannot be reported: the DOM still needs a re-render
+    // to shed the difference, which same() flags for the caller.
     function attempt(readEl, isArtifact) {
       var wantDisp = (readEl.textContent || '').replace(/\n+$/, '');
       var wantCanon = canonicalOfEl(readEl, base);
-      function same() { return isArtifact ? null : { changed: false }; }
+      function same() { return isArtifact ? { changed: false, artifact: true } : { changed: false }; }
       if (oldDisp !== null && wantDisp === oldDisp && src.canon === wantCanon) return same();
       function accept(cand) {
         if (cand === null) return null;
@@ -2370,7 +2394,7 @@
     // two that make a hard break; normalizing those away deleted them on the
     // first edit anywhere in the block. Edge whitespace the source does *not*
     // account for is WebKit's, and must be shed rather than written to the file.
-    var rd = normalizeBoundaryWs(el);
+    var rd = normalizeBoundaryWs(el, src && src.el);
     var normalized = canonicalOfEl(rd, base) !== canonicalOfEl(el, base);
     // Both readings are self-consistent — a paragraph really can end with a
     // space, a list item really can start with one — so the DOM alone cannot
@@ -2387,12 +2411,13 @@
     if (normalized && !srcHasEdgeWs) return attempt(rd, true);
     var r = attempt(el, false);
     if (r) return r;
-    // Only fall back to the trimmed reading when the source has no edge
-    // whitespace of its own. Where it does, that reading deletes content, and
-    // reconciling against it writes the deletion to the file — "&#9;foo" came
-    // back as "foo", losing the tab, on any edit. Refusing loses the keystroke
-    // instead, which the user can see and retry.
-    return (normalized && !srcHasEdgeWs) ? attempt(rd, true) : null;
+    // Fall back to the trimmed reading. rd is source-aware: edges the source
+    // itself holds whitespace at are preserved (per-edge, see
+    // normalizeBoundaryWs), so this no longer deletes content like "&#9;foo"'s
+    // tab — and refusing here is not the harmless option it was once thought
+    // to be: a refusal reverts the block, which destroys the caret and any
+    // keystroke in flight.
+    return normalized ? attempt(rd, true) : null;
   }
 
   return {

@@ -582,3 +582,33 @@ test('a trailing space typed at an item end survives the flush without moving th
   assert.equal(t.md(), '- alpha bravo During that time\n- Note that charlie\n');
   assert.ok(t.doc.querySelector('li').contains(t.win.getSelection().anchorNode), 'caret still in the first item');
 });
+
+// An artifact-only flush — the DOM holds just a stranded edge nbsp, the source
+// needs nothing — used to be reported as unreconcilable so the REVERT would
+// shed it. A revert re-renders from source: it destroys the caret and eats any
+// keystroke whose DOM mutation is still in flight (burst-start flushes run
+// inside beforeinput, before the browser inserts the character). 2026-08-12,
+// second incident: caret thrown to block start, "nsure no co" typed there,
+// then discarded by the next revert.
+
+test('an artifact-only flush neither reverts nor moves the caret', async () => {
+  const t = await setup('- one\n- two\n- three\n\ntail paragraph\n');
+  const li = t.doc.querySelectorAll('li')[1];
+  const w = t.doc.createTreeWalker(li, t.win.NodeFilter.SHOW_TEXT);
+  const node = w.nextNode();
+  node.textContent = 'two ';
+  caret(t.win, { text: 'two', at: node.textContent.length });
+  t.win.saveNow();
+  assert.ok(!t.log.some((l) => l.includes('REVERT') || l.includes('FAILED')),
+    `no revert, got: ${JSON.stringify(t.log.slice(-3))}`);
+  assert.equal(t.md(), '- one\n- two\n- three\n\ntail paragraph\n', 'source stays clean');
+  const sel = t.win.getSelection();
+  assert.equal(sel.anchorNode, node, 'caret still in the same text node');
+  assert.equal(sel.anchorOffset, node.textContent.length, 'caret unmoved');
+  assert.ok(node.textContent.endsWith(' '), 'screen keeps the artifact while the caret is on it');
+  // Caret leaves the block (the deferral is per block, so another item of the
+  // same list would keep it): the artifact sheds on the next flush.
+  caret(t.win, { text: 'tail paragraph', at: 0 });
+  t.win.saveNow();
+  assert.equal(t.doc.querySelectorAll('li')[1].textContent, 'two', 'artifact shed once the caret left');
+});

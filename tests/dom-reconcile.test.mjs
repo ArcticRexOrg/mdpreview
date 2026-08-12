@@ -89,14 +89,17 @@ test('a heading edit that strands a trailing nbsp folds, not reverts (bug #2)', 
   assert.equal(r.raw, '### Reconciliation — the closure guarantees\n', 'source drops the unrepresentable trailing space');
 });
 
-test('a stranded edge artifact with no real edit reverts to a clean re-render', () => {
+test('a stranded edge artifact with no real edit is unchanged-but-stale, not a refusal', () => {
   // A lone trailing nbsp (no other change): source needs nothing, but the DOM
-  // must not be left carrying it. Reconcile reverts (caller re-renders clean)
-  // rather than reporting "unchanged" and stranding the artifact.
+  // has not converged — `artifact: true` tells the caller to schedule a
+  // re-render. This used to be reported as null so the REVERT would shed it;
+  // a revert destroys the caret and any keystroke in flight (2026-08-12), so
+  // the shed now belongs to the caret-aware refresh machinery.
   const t = renderBlock('## Title\n');
   t.el.querySelector('h2').innerHTML = 'Title&nbsp;';
   const r = core.reconcileDomEdit(t.el, t.token, marked);
-  assert.equal(r, null, 'artifact-only DOM must revert so the re-render sheds it');
+  assert.deepEqual(r, { changed: false, artifact: true },
+    'artifact-only DOM is unchanged, flagged for a re-render to shed it');
 });
 
 test('untouched blocks starting or ending with a code span read back unchanged', () => {
@@ -118,13 +121,14 @@ test('untouched blocks starting or ending with a code span read back unchanged',
   }
 });
 
-test('an artifact stranded beyond an edge code span is still shed', () => {
+test('an artifact stranded beyond an edge code span is still flagged for shedding', () => {
   // The code span occupies the edge, but a trailing nbsp injected AFTER it is
-  // still an artifact: revert so the re-render sheds it.
+  // still an artifact: unchanged, flagged so the refresh machinery sheds it.
   const t = renderBlock('Run tests via `/tdd`\n');
   t.el.querySelector('p').appendChild(t.doc.createTextNode(' '));
   const r = core.reconcileDomEdit(t.el, t.token, marked);
-  assert.equal(r, null, 'artifact-only DOM must revert so the re-render sheds it');
+  assert.deepEqual(r, { changed: false, artifact: true },
+    'artifact-only DOM is unchanged, flagged for a re-render to shed it');
 });
 
 test('an edit elsewhere in a block ending with a code span keeps the edge space', () => {

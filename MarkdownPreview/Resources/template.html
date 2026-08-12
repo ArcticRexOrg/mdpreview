@@ -725,7 +725,14 @@
                 elog('flush seg=' + i + ' FAILED — DOM edit not reconcilable, raw=' + exc(seg.raw) + ' dom=' + exc(div.textContent) + ' html=' + exc(div.innerHTML, 2000));
                 return false;
             }
-            if (!rec.changed) return true;
+            if (!rec.changed) {
+                // The source needs nothing, but the DOM holds an edge-whitespace
+                // artifact it hasn't shed yet — leave that to the refresh
+                // machinery, whose deferral knows not to pull it out from under
+                // a live caret.
+                if (rec.artifact) seg.domStale = true;
+                return true;
+            }
             elog('flush seg=' + i + ' reconciled ' + exc(seg.raw) + ' -> ' + exc(rec.raw) + (rec.empty ? ' (emptied)' : ''));
             if (rec.empty && (seg.type === 'paragraph' || rec.raw === '')) {
                 // All visible text gone: the block has no source bytes left worth
@@ -745,11 +752,36 @@
             return true;
         }
         // An unclean flush forced a revert: the DOM edits could not be folded
-        // into the source, so the block is re-rendered from its last good raw.
+        // into the source, so the block is re-rendered from its last good raw —
+        // the unrepresentable edit visibly bounces. The caret is carried across
+        // by source offset so nothing else is disturbed.
         function revertSeg(div) {
-            var i = segIndexOf(div);
+            var i = segIndexOf(div), seg = _segments[i];
             elog('REVERT seg=' + i + ' — discarding DOM edits, re-rendering from source');
-            renderSeg(div, _segments[i]);
+            var s = selectionSourceIn(div, seg);
+            renderSeg(div, seg);
+            if (s) restoreSelectionSource(div, seg, s);
+        }
+
+        // The selection inside `div` as source offsets, ready to survive a
+        // re-render ({ a, b }, a === b for a caret), or null when the selection
+        // is absent, outside the block, or straddles its boundary.
+        function selectionSourceIn(div, seg) {
+            var sel = window.getSelection(), r = sel.rangeCount ? sel.getRangeAt(0) : null;
+            if (!r || !seg || !seg.token) return null;
+            if (!div.contains(r.startContainer) || !div.contains(r.endContainer)) return null;
+            if (r.collapsed) {
+                var a = EditorCore.domOffsetToSourceOffset(div, r.startContainer, r.startOffset, seg.token);
+                return { a: a, b: a };
+            }
+            return {
+                a: EditorCore.domOffsetToSourceOffset(div, r.startContainer, r.startOffset, seg.token, 'start'),
+                b: EditorCore.domOffsetToSourceOffset(div, r.endContainer, r.endOffset, seg.token, 'end'),
+            };
+        }
+        function restoreSelectionSource(div, seg, s) {
+            if (s.a === s.b) setCaretSource(div, seg, s.a);
+            else setSelectionSource(div, seg, s.a, s.b);
         }
 
         function setCaretSource(div, seg, srcOffset) {
@@ -784,8 +816,9 @@
             return priorLen(i) + local;
         }
         // Fold any pending edit into the source, then snapshot doc + caret.
+        // Runs inside input dispatches (undo coalescing), so reverts defer.
         function snapshot() {
-            flushActive();
+            flushActive(true);
             return { md: currentMarkdown(), caret: currentGlobalCaret() };
         }
         // A distinct undo step (structural ops, paste) — never coalesced.
@@ -1167,11 +1200,23 @@
         // and by the time the debounced save runs the active element is B — A's
         // edit would sit in the DOM only, dropped from saves and resurrected by
         // the next re-render.
-        function flushActive() {
+        function flushActive(deferReverts) {
             var c = contentEl();
             if (!c) return;
             c.querySelectorAll('[data-seg][contenteditable="true"]').forEach(function(div) {
-                if (!flushSegment(div)) { revertSeg(div); return; }
+                if (!flushSegment(div)) {
+                    // A failed fold: the DOM holds an edit the source cannot
+                    // represent (e.g. a space typed at an emphasis edge), and
+                    // the block must be re-rendered from its last good source.
+                    // Never do that from inside an input dispatch — the
+                    // browser's DOM mutation for the current keystroke has not
+                    // happened yet and would land in the discarded tree. Undo
+                    // snapshots run inside dispatches, so they defer; the save
+                    // path, always its own task, reverts.
+                    if (deferReverts) { elog('flush seg=' + segIndexOf(div) + ' unreconcilable — revert deferred to the save path'); return; }
+                    revertSeg(div);
+                    return;
+                }
                 var seg = _segments[segIndexOf(div)];
                 if (seg && seg.domStale && refreshSeg(div, seg)) delete seg.domStale;
             });
@@ -1207,23 +1252,12 @@
                      ' char(s) of engine whitespace the source cannot represent');
                 return false;
             }
-            var a = null, b = null;
-            if (touches && div.contains(r.startContainer) && div.contains(r.endContainer)) {
-                if (r.collapsed) {
-                    a = b = EditorCore.domOffsetToSourceOffset(div, r.startContainer, r.startOffset, seg.token);
-                } else {
-                    a = EditorCore.domOffsetToSourceOffset(div, r.startContainer, r.startOffset, seg.token, 'start');
-                    b = EditorCore.domOffsetToSourceOffset(div, r.endContainer, r.endOffset, seg.token, 'end');
-                }
-            } else if (touches) {
-                elog('refresh seg=' + i + ' — selection straddles the block, not carried');
-            }
+            var s = selectionSourceIn(div, seg);
+            if (touches && !s) elog('refresh seg=' + i + ' — selection straddles the block, not carried');
             elog('refresh seg=' + i + ' — re-render after structural reconcile' +
-                 (a == null ? '' : a === b ? ', caret at src=' + a : ', selection at src=[' + a + ',' + b + ')'));
+                 (s == null ? '' : s.a === s.b ? ', caret at src=' + s.a : ', selection at src=[' + s.a + ',' + s.b + ')'));
             renderSeg(div, seg);
-            if (a == null) return true;
-            if (a === b) setCaretSource(div, seg, a);
-            else setSelectionSource(div, seg, a, b);
+            if (s) restoreSelectionSource(div, seg, s);
             return true;
         }
 
