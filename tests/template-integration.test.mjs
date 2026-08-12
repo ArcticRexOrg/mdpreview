@@ -671,3 +671,22 @@ test('typing that strands a space at a table cell edge folds without a revert', 
   assert.ok(t.md().includes('expected to'), 'typed text folds into the cell source');
   assert.equal(t.win.getSelection().anchorNode, node, 'caret unmoved');
 });
+
+// A table containing empty cells was silently read-only: a whitespace-only
+// cell counted its padding twice (leading and trailing regexes overlapping),
+// the byte-tiling check failed, and blockCoords demoted the block. 2026-08-12,
+// fourth incident — the comparison-matrix table with checkmark cells.
+test('tables with empty cells are editable and fold edits', async () => {
+  const t = await setup('| | B |\n|---|---|\n| x | |\n');
+  const seg = t.doc.querySelector('[data-seg]');
+  assert.equal(seg.getAttribute('contenteditable'), 'true', 'table with empty cells is editable');
+  const empty = [...t.doc.querySelectorAll('td')].find((td) => td.textContent === '');
+  empty.appendChild(t.doc.createTextNode('filled'));
+  const sel = t.win.getSelection(), r = t.doc.createRange();
+  r.setStart(empty.firstChild, 6); r.collapse(true);
+  sel.removeAllRanges(); sel.addRange(r);
+  t.win.saveNow();
+  assert.ok(t.md().includes('filled'), `edit folds into source, got ${JSON.stringify(t.md())}`);
+  assert.ok(!t.log.some((l) => l.includes('REVERT') || l.includes('FAILED')),
+    `no revert, got: ${JSON.stringify(t.log.slice(-3))}`);
+});

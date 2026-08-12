@@ -1,7 +1,7 @@
 {
   "note": "Written by tests/laws.test.mjs. lawfulEditable may only rise; editableUnlawful and formatLimited may only fall. Commit changes to this file with the change that earned them.",
   "overrideNote": "Hand-reset twice. (1) When spliceWitness stopped asking our own offset map where to splice and began scanning every source offset: the old oracle shared a bug with the code it judged, so six real defects were certified as limits of markdown. (2) When blockquotes whose text marked re-indents were made read-only, costing two lawful blocks. Those two were mapped wrongly the whole time and the laws could not see it, because L2 round-trips through the same map in both directions: in '> foo\\n    - bar' the caret shown before \"bar\" resolved to source offset 8, inside the four-space indent, so typing there went into the indentation. Giving up a block we were quietly mishandling is worth more than the count it costs.",
-  "lawfulEditable": 582,
+  "lawfulEditable": 583,
   "editableUnlawful": 0,
   "formatLimited": 21,
   "byLaw": {

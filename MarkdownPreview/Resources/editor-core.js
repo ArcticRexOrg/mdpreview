@@ -806,7 +806,12 @@
       for (k = 0; k < parts.length; k++) {
         if (wi >= want.length) return null;
         var cellRaw = parts[k];
-        var lm = /^[ \t]*/.exec(cellRaw)[0], tm = /[ \t]*$/.exec(cellRaw)[0];
+        // tm is taken from the remainder AFTER lm, or a whitespace-only cell
+        // (an empty cell, "| |") counts its padding twice — once as leading,
+        // once as trailing — and the tiling check below rejects the table,
+        // silently demoting it to read-only.
+        var lm = /^[ \t]*/.exec(cellRaw)[0];
+        var tm = /[ \t]*$/.exec(cellRaw.slice(lm.length))[0];
         var content = cellRaw.slice(lm.length, cellRaw.length - tm.length);
         // marked reports a cell's text with its escaped pipes already
         // unescaped, since only an unescaped one divides cells. Compare on
@@ -2144,8 +2149,8 @@
   // with the textless blocks the model reports for those items.
   function emptyBlockEls(el) {
     var out = [];
-    Array.prototype.forEach.call(el.querySelectorAll('li,p'), function (e) {
-      if (e.textContent === '' && !e.querySelector('li,p')) out.push(e);
+    Array.prototype.forEach.call(el.querySelectorAll('li,p,td,th'), function (e) {
+      if (e.textContent === '' && !e.querySelector('li,p,td,th')) out.push(e);
     });
     return out;
   }
