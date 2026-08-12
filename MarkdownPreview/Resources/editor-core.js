@@ -1133,8 +1133,8 @@
   // node beside it ("via `/tdd`") is rendered inter-word content, not an
   // artifact — trimming it would glue the words ("via/tdd"). Only when the
   // outermost item on a side is a text node can that side hold an artifact.
-  var EDGE_TRIM_SEL = 'h1,h2,h3,h4,h5,h6,p,li';
-  var EDGE_BLOCK = { UL: 1, OL: 1, LI: 1, P: 1, BLOCKQUOTE: 1, PRE: 1, TABLE: 1, DIV: 1, H1: 1, H2: 1, H3: 1, H4: 1, H5: 1, H6: 1 };
+  var EDGE_TRIM_SEL = 'h1,h2,h3,h4,h5,h6,p,li,td,th';
+  var EDGE_BLOCK = { UL: 1, OL: 1, LI: 1, P: 1, BLOCKQUOTE: 1, PRE: 1, TABLE: 1, DIV: 1, H1: 1, H2: 1, H3: 1, H4: 1, H5: 1, H6: 1, TD: 1, TH: 1 };
   function edgeItems(container) {
     var out = [];
     (function walk(node) {

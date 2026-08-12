@@ -652,3 +652,22 @@ test('a merged disk change keeps the caret with the local edit', async () => {
   assert.equal(sel.anchorNode.textContent, 'twoX', 'caret stayed with the local edit');
   assert.equal(sel.anchorOffset, 4);
 });
+
+test('typing that strands a space at a table cell edge folds without a revert', async () => {
+  // 2026-08-12, third incident: td/th were not edge-trim containers, so a
+  // stranded nbsp in a cell could never be shed — reconcile failed and the
+  // REVERT discarded the whole unfolded typing run.
+  const t = await setup('| A | B |\n|---|---|\n| one | expected |\n');
+  const td = t.doc.querySelectorAll('td')[1];
+  const w = t.doc.createTreeWalker(td, t.win.NodeFilter.SHOW_TEXT);
+  const node = w.nextNode();
+  node.textContent = 'expected to ';
+  const sel = t.win.getSelection(), r = t.doc.createRange();
+  r.setStart(node, node.textContent.length); r.collapse(true);
+  sel.removeAllRanges(); sel.addRange(r);
+  t.win.saveNow();
+  assert.ok(!t.log.some((l) => l.includes('REVERT') || l.includes('FAILED')),
+    `no revert, got: ${JSON.stringify(t.log.slice(-3))}`);
+  assert.ok(t.md().includes('expected to'), 'typed text folds into the cell source');
+  assert.equal(t.win.getSelection().anchorNode, node, 'caret unmoved');
+});
