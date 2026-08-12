@@ -612,3 +612,43 @@ test('an artifact-only flush neither reverts nor moves the caret', async () => {
   t.win.saveNow();
   assert.equal(t.doc.querySelectorAll('li')[1].textContent, 'two', 'artifact shed once the caret left');
 });
+
+// --- external disk changes must not move a parked caret -----------------------
+// applyDiskChange rebuilds the whole document (verbatim when idle, three-way
+// merge when dirty). Before 2026-08-12 neither branch restored the selection:
+// any external write — another window saving the same file, another session
+// editing it, git — threw a parked caret to wherever WebKit re-anchored it.
+
+test('a verbatim disk change does not move a parked caret', async () => {
+  const t = await setup('- one\n- two\n- three\n\npara\n');
+  caret(t.win, { text: 'two', at: 2 });
+  // Echo: same content arrives from disk (the multi-window case).
+  t.win.applyDiskChange('- one\n- two\n- three\n\npara\n');
+  let sel = t.win.getSelection();
+  assert.equal(sel.anchorNode.textContent, 'two', 'caret still in its item');
+  assert.equal(sel.anchorOffset, 2, 'caret at the same offset');
+  // A real external edit elsewhere in the document.
+  t.win.applyDiskChange('- one\n- two\n- three\n\nPARA changed\n');
+  sel = t.win.getSelection();
+  assert.equal(sel.anchorNode.textContent, 'two', 'caret survives a distant edit');
+  assert.equal(sel.anchorOffset, 2);
+  assert.equal(t.md(), '- one\n- two\n- three\n\nPARA changed\n');
+});
+
+test('a merged disk change keeps the caret with the local edit', async () => {
+  const t = await setup('- one\n- two\n- three\n\npara\n');
+  // Local unsaved edit: "two" -> "twoX", caret after the X.
+  const w = t.doc.createTreeWalker(t.doc.getElementById('content'), t.win.NodeFilter.SHOW_TEXT);
+  let n, node = null;
+  while ((n = w.nextNode())) if (n.textContent === 'two') { node = n; break; }
+  node.textContent = 'twoX';
+  caret(t.win, { text: 'twoX', at: 4 });
+  t.win.scheduleSave(); // mark dirty the way real typing does
+  // External edit to a different block arrives before our save.
+  t.win.applyDiskChange('- one\n- two\n- three\n\nPARA changed\n');
+  assert.ok(t.md().includes('twoX'), 'local edit survives the merge');
+  assert.ok(t.md().includes('PARA changed'), 'disk edit survives the merge');
+  const sel = t.win.getSelection();
+  assert.equal(sel.anchorNode.textContent, 'twoX', 'caret stayed with the local edit');
+  assert.equal(sel.anchorOffset, 4);
+});

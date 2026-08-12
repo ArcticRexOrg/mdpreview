@@ -172,6 +172,14 @@ const ACTIONS = [
     fire(t, 'keydown', { key: 'z', metaKey: true, shiftKey: shift });
     return shift ? 'redo' : 'undo';
   },
+  function diskEcho(t, rnd) {
+    // An external writer touches the file with content matching the last-known
+    // source — the constant multi-window case: every save in one window echoes
+    // into every other window showing the same file. applyDiskChange rebuilds
+    // the whole document; the selection and any pending DOM edit must survive.
+    t.win.applyDiskChange(t.win.currentMarkdown());
+    return 'diskEcho';
+  },
   function strandEdgeWs(t, rnd) {
     // Emulate WebKit stranding whitespace at a block's edge after a delete (the
     // &nbsp; it injects, or a space typed against a boundary) — content no

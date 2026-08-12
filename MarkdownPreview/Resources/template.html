@@ -1552,20 +1552,32 @@
             // in the round trip would manufacture "local edits" out of nothing
             // and write them back — re-mangling every external save/restore in
             // a loop. An idle viewer never writes the file, full stop.
+            // Both branches rebuild the whole document, which destroys any
+            // parked selection — so carry it as a global source offset, like
+            // undo does. Exact when the content is effectively unchanged (the
+            // multi-window echo case); clamped when the disk version really
+            // moved the text, where the nearest surviving position is the
+            // honest landing.
             if (!_dirty && !_conflicts.length) {
-                elog('applyDiskChange idle — take disk verbatim ' + diskMd.length + 'b');
+                var caret = currentGlobalCaret();
+                elog('applyDiskChange idle — take disk verbatim ' + diskMd.length + 'b' +
+                     (caret == null ? '' : ', carrying caret src=' + caret));
                 _rawMarkdown = diskMd; _baseMarkdown = diskMd;
                 renderReading();
+                if (caret != null) restoreGlobalCaret(Math.min(caret, diskMd.length));
                 return;
             }
             // Fold any in-progress (unsaved) edit into the source first, or the
             // merge can't see it and would silently drop it / miss a conflict.
             flushActive();
+            var mergeCaret = currentGlobalCaret();
             var res = EditorCore.reconcile(_baseMarkdown, currentMarkdown(), diskMd, marked);
-            elog('applyDiskChange disk=' + diskMd.length + 'b conflicts=' + res.conflicts.length);
+            elog('applyDiskChange disk=' + diskMd.length + 'b conflicts=' + res.conflicts.length +
+                 (mergeCaret == null ? '' : ', carrying caret src=' + mergeCaret));
             if (res.conflicts.length === 0) {
                 _rawMarkdown = res.merged; _baseMarkdown = res.merged;
                 renderReading();
+                if (mergeCaret != null) restoreGlobalCaret(Math.min(mergeCaret, res.merged.length));
                 if (res.merged !== diskMd) scheduleSave(); // persist our merge
                 return;
             }
