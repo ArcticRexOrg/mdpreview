@@ -1222,6 +1222,29 @@
   // the provenance spans (their raws tile the fragment). Inside a pure text
   // span the mapping is linear; inside a delimited span it is linear past the
   // leading delimiter, clamped to the span's chars.
+  /**
+   * Where each display char of a provenance span begins in its source bytes,
+   * for spans built out of plain text, entities and backslash escapes — the
+   * ones whose source is longer than what they show, with no delimiters to
+   * account for. Returns null when the walk does not land exactly on the
+   * span's char count, which is the signal that the span is something else
+   * (an emphasis run, a link) and the caller should use its own reasoning.
+   */
+  function unitStarts(raw, chars) {
+    var starts = [], i = 0, k = 0;
+    while (i < raw.length && k < chars.length) {
+      if (chars[k].obj) return null; // an image is not spelled out in the text
+      var m = /^&(#\d+|#[xX][0-9a-fA-F]+|[a-zA-Z][a-zA-Z0-9]*);/.exec(raw.slice(i));
+      var len = m ? m[0].length
+        : (raw.charAt(i) === '\\' && i + 1 < raw.length) ? 2
+        : chars[k].ch.length; // a surrogate pair spans two code units
+      starts.push(i);
+      i += len;
+      k++;
+    }
+    return (i === raw.length && k === chars.length) ? starts : null;
+  }
+
   function srcToCharIdx(prov, srcOff) {
     var acc = 0;
     for (var k = 0; k < prov.length; k++) {
@@ -1231,6 +1254,18 @@
         var plain = '';
         for (var c = 0; c < sp.chars.length; c++) plain += sp.chars[c].obj ? '\x00' : sp.chars[c].ch;
         if (sp.raw === plain) return sp.from + Math.min(srcOff - acc, n);
+        // A span whose bytes differ from its display only because of entities
+        // and backslash escapes maps exactly, one source unit per char. The
+        // interpolation below cannot: it assumes every char costs one byte
+        // after a fixed leading delimiter, so in "foo&amp;bar" every offset
+        // past the entity resolved four characters short — a caret misplaced
+        // in any text containing an entity, which is most real documents.
+        var starts = unitStarts(sp.raw, sp.chars);
+        if (starts) {
+          var d = srcOff - acc, u = 0;
+          while (u + 1 < starts.length && starts[u + 1] <= d) u++;
+          return sp.from + Math.min(u, n);
+        }
         var lead = provLeadLen(sp.raw);
         return sp.from + Math.max(0, Math.min(srcOff - acc - lead, n));
       }
@@ -2122,6 +2157,44 @@
   }
 
   /**
+   * The block's source with the display-text change spliced straight in.
+   *
+   * Reduces the edit to the one contiguous run that differs between the old and
+   * new display text, maps its ends to source offsets through the coordinate
+   * map, and replaces those bytes. Returns null when there is no map, or when
+   * the change is not a single run (the model print handles those better
+   * anyway). Deliberately approximate at the ends — a char whose source is more
+   * than one byte, an escape or an entity, may splice a byte off — because the
+   * caller verifies the result by rendering it, so a bad splice costs nothing.
+   */
+  function spliceCandidate(blockToken, oldDisp, wantDisp) {
+    var coords = coordsOf(blockToken);
+    if (!coords || oldDisp === null || wantDisp === oldDisp) return null;
+    var raw = blockToken.raw;
+    var a = 0;
+    while (a < oldDisp.length && a < wantDisp.length && oldDisp.charAt(a) === wantDisp.charAt(a)) a++;
+    var z = 0;
+    while (z < oldDisp.length - a && z < wantDisp.length - a &&
+           oldDisp.charAt(oldDisp.length - 1 - z) === wantDisp.charAt(wantDisp.length - 1 - z)) z++;
+    var oldEnd = oldDisp.length - z;
+    // Source offset for a display offset: the position of the character that
+    // starts there, or just past the last one at the end of the block.
+    function srcAt(d) {
+      if (d >= coords.dispLen) {
+        var last = coords.chars.length - 1;
+        return last < 0 ? 0 : (coords.srcEndOfChar[last] === undefined ? raw.length : coords.srcEndOfChar[last] + 1);
+      }
+      var ci = coords.charOfDisp[d];
+      if (ci === undefined) return null;
+      var s = coords.srcEndOfChar[ci];
+      return s === undefined ? coords.srcOfChar[ci] : s;
+    }
+    var s0 = srcAt(a), s1 = srcAt(oldEnd);
+    if (s0 === null || s1 === null || s1 < s0 || s1 > raw.length) return null;
+    return raw.slice(0, s0) + wantDisp.slice(a, wantDisp.length - z) + raw.slice(s1);
+  }
+
+  /**
    * Fold an arbitrary text edit in `el` back into the block's source.
    * Returns { changed:false } if DOM and source agree,
    *         { changed:true, raw, empty } when reconciled (empty: the block's
@@ -2161,6 +2234,7 @@
       function same() { return isArtifact ? null : { changed: false }; }
       if (oldDisp !== null && wantDisp === oldDisp && src.canon === wantCanon) return same();
       function accept(cand) {
+        if (cand === null) return null;
         if (cand === blockToken.raw) return same();
         if (relexMatches(doc, cand, wantDisp, marked) === null) return null;
         if (renderedCanonicalOf(doc, cand, marked) !== wantCanon) return null;
@@ -2182,7 +2256,19 @@
           text: b.text, prov: null, raw: null, sep: b.sep,
         };
       }), marked);
-      return canonical === cand ? null : accept(canonical);
+      if (canonical !== cand) {
+        r = accept(canonical);
+        if (r) return r;
+      }
+      // Last resort: keep the source and change as little of it as possible.
+      // Printing rewrites the whole block from the model, which loses spellings
+      // the model does not carry — a link written [x](foo%20b&auml;) comes back
+      // decoded, and marked then percent-encodes it into a different URL. When
+      // the edit is one contiguous run of display text, splicing it into the
+      // original bytes preserves everything it did not touch. accept() checks
+      // the result as strictly as any other candidate, so an inexact splice is
+      // rejected rather than trusted.
+      return accept(spliceCandidate(blockToken, oldDisp, wantDisp));
     }
 
     // Which reading to believe first depends on the source, not the DOM alone.
@@ -2208,7 +2294,12 @@
     if (normalized && !srcHasEdgeWs) return attempt(rd, true);
     var r = attempt(el, false);
     if (r) return r;
-    return normalized ? attempt(rd, true) : null;
+    // Only fall back to the trimmed reading when the source has no edge
+    // whitespace of its own. Where it does, that reading deletes content, and
+    // reconciling against it writes the deletion to the file — "&#9;foo" came
+    // back as "foo", losing the tab, on any edit. Refusing loses the keystroke
+    // instead, which the user can see and retry.
+    return (normalized && !srcHasEdgeWs) ? attempt(rd, true) : null;
   }
 
   return {

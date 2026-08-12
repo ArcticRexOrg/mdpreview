@@ -116,16 +116,20 @@ function checkCaretRoundTrip(el, token) {
 // unwitnessed — not excused, just separated, and the count is reported so it
 // has to be argued for rather than assumed.
 function spliceWitness(raw, token, el, dispPos, wantDisp) {
-  let src;
-  try {
-    const q = positions(el).find((x) => x.disp === dispPos) || { node: el, offset: 0 };
-    src = core.domOffsetToSourceOffset(render(raw), q.node, q.offset, token);
-  } catch (_) { return false; }
-  if (typeof src !== 'number' || src < 0 || src > raw.length) return false;
-  const cand = raw.slice(0, src) + 'X' + raw.slice(src);
-  const candEl = render(cand);
-  return displayText(candEl) === wantDisp &&
-         core.canonicalOfEl(candEl) === core.canonicalOfEl(el);
+  // Every source offset, not the one our own map suggests. Asking the map
+  // where to splice made this oracle depend on the code it is judging: when
+  // the map was wrong — it interpolates across an entity, so the "f" of
+  // "&#9;foo" resolves into the middle of the entity — the witness search
+  // failed for the same reason the editor did, and a plain defect was filed
+  // as a limit of markdown. An oracle that shares a bug with its subject
+  // certifies the bug. Scanning is O(len) on a single block and owes the
+  // implementation nothing.
+  const wantCanon = core.canonicalOfEl(el);
+  for (let src = 0; src <= raw.length; src++) {
+    const candEl = render(raw.slice(0, src) + 'X' + raw.slice(src));
+    if (displayText(candEl) === wantDisp && core.canonicalOfEl(candEl) === wantCanon) return true;
+  }
+  return false;
 }
 
 function checkEditFidelity(raw, token) {
@@ -265,7 +269,12 @@ test('RATCHET: improvements must be recorded in laws-baseline.json', () => {
                  census.formatLimited < baseline.formatLimited;
   if (!better) return;
   writeFileSync(baselinePath, JSON.stringify({
-    note: 'Written by tests/laws.test.mjs. lawfulEditable may only rise; editableUnlawful may only fall. Commit changes to this file with the change that earned them.',
+    note: 'Written by tests/laws.test.mjs. lawfulEditable may only rise; editableUnlawful and formatLimited may only fall. Commit changes to this file with the change that earned them.',
+    // Carried forward, never generated. A hand-reset is the one way past the
+    // ratchet, and the reason for it must outlive the next improvement that
+    // rewrites this file — otherwise the record says only that the numbers
+    // changed, not why anyone was allowed to change them.
+    ...(baseline.overrideNote ? { overrideNote: baseline.overrideNote } : {}),
     lawfulEditable: census.lawfulEditable,
     editableUnlawful: census.editableUnlawful,
     formatLimited: census.formatLimited,
