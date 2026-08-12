@@ -754,7 +754,7 @@
 
         function setCaretSource(div, seg, srcOffset) {
             var pos = EditorCore.sourceOffsetToDom(div, srcOffset, seg.token);
-            if (!pos.node) return;
+            if (!pos.node) { elog('setCaretSource seg=' + segIndexOf(div) + ' src=' + srcOffset + ' UNMAPPABLE — caret left where it was'); return; }
             var sel = window.getSelection(), r = document.createRange();
             r.setStart(pos.node, pos.offset); r.collapse(true);
             sel.removeAllRanges(); sel.addRange(r);
@@ -766,7 +766,7 @@
         function setSelectionSource(div, seg, a, b) {
             var pa = EditorCore.sourceOffsetToDom(div, a, seg.token);
             var pb = EditorCore.sourceOffsetToDom(div, b, seg.token);
-            if (!pa.node || !pb.node) return;
+            if (!pa.node || !pb.node) { elog('setSelectionSource seg=' + segIndexOf(div) + ' [' + a + ',' + b + ') UNMAPPABLE — selection not restored'); return; }
             var sel = window.getSelection(), r = document.createRange();
             r.setStart(pa.node, pa.offset); r.setEnd(pb.node, pb.offset);
             sel.removeAllRanges(); sel.addRange(r);
@@ -1095,6 +1095,8 @@
                 var editable = seg.type !== 'space' && !seg.transient;
                 if (editable && globalOffset >= acc && globalOffset <= end) {
                     var div = contentEl().querySelector('[data-seg="' + i + '"]');
+                    elog('restoreGlobalCaret ' + globalOffset + ' → seg=' + i + ' src=' + (globalOffset - acc) +
+                         (div ? '' : ' — NO DIV, caret not restored'));
                     if (div) setCaretSource(div, seg, globalOffset - acc);
                     return;
                 }
@@ -1104,8 +1106,11 @@
             // Offset fell in a separator/gap (e.g. a trailing empty list item's
             // orphaned whitespace) — clamp to the end of the last editable block.
             if (lastEd) {
+                elog('restoreGlobalCaret ' + globalOffset + ' fell in a gap — clamped to end of seg=' + lastEd.i);
                 var d = contentEl().querySelector('[data-seg="' + lastEd.i + '"]');
                 if (d) setCaretSource(d, lastEd.seg, Math.min(globalOffset - lastEd.start, lastEd.len));
+            } else {
+                elog('restoreGlobalCaret ' + globalOffset + ' — no editable seg, caret not restored');
             }
         }
 
@@ -1168,36 +1173,58 @@
             c.querySelectorAll('[data-seg][contenteditable="true"]').forEach(function(div) {
                 if (!flushSegment(div)) { revertSeg(div); return; }
                 var seg = _segments[segIndexOf(div)];
-                if (seg && seg.domStale) { delete seg.domStale; refreshSeg(div, seg); }
+                if (seg && seg.domStale && refreshSeg(div, seg)) delete seg.domStale;
             });
         }
         // Re-render a block whose source structure changed under a live DOM
-        // (zombie formatting elements survive text deletion). The visible text
-        // is identical — the reconciler verified it — so only the caret needs
-        // carrying across, by display offset.
+        // (zombie formatting elements survive text deletion), carrying the
+        // selection across by SOURCE offset — the same mapping every other op
+        // uses. A display-offset carry drifts whenever rendering normalizes a
+        // character away, which is exactly the situation refresh runs in.
+        //
+        // One refusal: when the live DOM holds engine whitespace the source
+        // legitimately cannot represent (WebKit's trailing &nbsp; under the
+        // caret), re-rendering would eat the space mid-typing. The block stays
+        // stale — return false so the caller keeps domStale — and reconverges
+        // at the next keystroke (WebKit solidifies the space into content) or
+        // on the first flush after the caret has left.
         function refreshSeg(div, seg) {
-            var sel = window.getSelection(), dispOff = null;
-            if (sel.rangeCount && sel.isCollapsed && div.contains(sel.anchorNode)) {
-                var r = document.createRange();
-                r.setStart(div, 0); r.setEnd(sel.anchorNode, sel.anchorOffset);
-                dispOff = r.toString().length;
+            var i = segIndexOf(div);
+            var sel = window.getSelection(), r = sel.rangeCount ? sel.getRangeAt(0) : null;
+            var touches = r && (div.contains(r.startContainer) || div.contains(r.endContainer));
+            if (seg.transient) {
+                elog('refresh seg=' + i + ' — emptied block, transient placeholder');
+                div.innerHTML = '<p><br></p>';
+                if (touches) placeCaretInTransient(i);
+                return true;
             }
-            elog('refresh seg=' + segIndexOf(div) + ' — re-render after structural reconcile');
-            if (seg.transient) div.innerHTML = '<p><br></p>';
-            else renderSeg(div, seg);
-            if (dispOff == null) return;
-            var w = document.createTreeWalker(div, NodeFilter.SHOW_TEXT);
-            var acc = 0, n, r2 = document.createRange();
-            while ((n = w.nextNode())) {
-                if (dispOff <= acc + n.textContent.length) {
-                    r2.setStart(n, dispOff - acc); r2.collapse(true);
-                    sel.removeAllRanges(); sel.addRange(r2);
-                    return;
+            var scratch = document.createElement('div');
+            scratch.innerHTML = renderSegment(seg);
+            EditorCore.stripStructuralWhitespace(scratch);
+            if (touches && scratch.textContent !== div.textContent) {
+                elog('refresh seg=' + i + ' deferred — live DOM holds ' +
+                     (div.textContent.length - scratch.textContent.length) +
+                     ' char(s) of engine whitespace the source cannot represent');
+                return false;
+            }
+            var a = null, b = null;
+            if (touches && div.contains(r.startContainer) && div.contains(r.endContainer)) {
+                if (r.collapsed) {
+                    a = b = EditorCore.domOffsetToSourceOffset(div, r.startContainer, r.startOffset, seg.token);
+                } else {
+                    a = EditorCore.domOffsetToSourceOffset(div, r.startContainer, r.startOffset, seg.token, 'start');
+                    b = EditorCore.domOffsetToSourceOffset(div, r.endContainer, r.endOffset, seg.token, 'end');
                 }
-                acc += n.textContent.length;
+            } else if (touches) {
+                elog('refresh seg=' + i + ' — selection straddles the block, not carried');
             }
-            r2.selectNodeContents(div); r2.collapse(false);
-            sel.removeAllRanges(); sel.addRange(r2);
+            elog('refresh seg=' + i + ' — re-render after structural reconcile' +
+                 (a == null ? '' : a === b ? ', caret at src=' + a : ', selection at src=[' + a + ',' + b + ')'));
+            renderSeg(div, seg);
+            if (a == null) return true;
+            if (a === b) setCaretSource(div, seg, a);
+            else setSelectionSource(div, seg, a, b);
+            return true;
         }
 
         function saveNow() {

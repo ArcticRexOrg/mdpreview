@@ -2413,6 +2413,7 @@
     renderedDisplayOf: renderedDisplayOf,
     renderedCanonicalOf: renderedCanonicalOf,
     canonicalOfEl: canonicalOfEl,
+    normalizeBoundaryWs: normalizeBoundaryWs,
     stripStructuralWhitespace: stripStructuralWhitespace,
     atBlockEdge: atBlockEdge,
     adjacentEditableSeg: adjacentEditableSeg,

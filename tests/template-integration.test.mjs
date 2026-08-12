@@ -548,3 +548,37 @@ test('the document survives a handler that throws', async () => {
   t.win.EditorCore.splitBlock = orig;
   assert.equal(t.md(), md, 'source must be unchanged after a failed handler');
 });
+
+// --- the caret survives the post-flush re-render -----------------------------
+// The 2026-08-12 incident: typing "…During that " at the end of a list item,
+// pausing 500ms (the debounced flush), then typing "time " landed the caret one
+// character into the NEXT item ("Ntime …ote that"). WebKit strands the trailing
+// space as &nbsp;; the reconciler correctly sheds it from the source; the
+// immediate re-render then ate the space on screen and shifted every display
+// offset by one. The contract pinned here: the file gets the clean source, the
+// screen keeps the typed space, the caret does not move, and the next words
+// land where they were aimed.
+
+test('a trailing space typed at an item end survives the flush without moving the caret', async () => {
+  const t = await setup('- alpha bravo\n- Note that charlie\n');
+  // The user appends " During that" and a space; WebKit strands it as nbsp.
+  const walk = t.doc.createTreeWalker(t.doc.getElementById('content'), t.win.NodeFilter.SHOW_TEXT);
+  let n, node = null;
+  while ((n = walk.nextNode())) if (n.textContent === 'alpha bravo') { node = n; break; }
+  node.textContent = 'alpha bravo During that\u00a0';
+  caret(t.win, { text: 'alpha bravo During that', at: node.textContent.length });
+  t.win.saveNow();
+  // The file gets clean source — the engine's nbsp is shed…
+  assert.equal(t.md(), '- alpha bravo During that\n- Note that charlie\n');
+  // …but the screen keeps the typed space and the caret has not moved.
+  const sel = t.win.getSelection();
+  assert.equal(sel.anchorNode.textContent, 'alpha bravo During that\u00a0', 'live text keeps the space');
+  assert.equal(sel.anchorOffset, sel.anchorNode.textContent.length, 'caret still at the end of the text');
+  assert.ok(t.doc.querySelector('li').contains(sel.anchorNode), 'caret still in the first item');
+  // Typing resumes: WebKit solidifies the nbsp into a plain space.
+  sel.anchorNode.textContent = 'alpha bravo During that time';
+  caret(t.win, { text: 'alpha bravo During that time', at: 'alpha bravo During that time'.length });
+  t.win.saveNow();
+  assert.equal(t.md(), '- alpha bravo During that time\n- Note that charlie\n');
+  assert.ok(t.doc.querySelector('li').contains(t.win.getSelection().anchorNode), 'caret still in the first item');
+});

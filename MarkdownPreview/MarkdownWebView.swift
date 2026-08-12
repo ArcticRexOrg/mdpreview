@@ -56,6 +56,7 @@ struct MarkdownWebView: NSViewRepresentable {
 
     func updateNSView(_ webView: WKWebView, context: Context) {
         let coord = context.coordinator
+        coord.docTag = exportFilename
 
         // View mode change
         if viewModeTrigger != coord.lastViewModeTrigger {
@@ -159,8 +160,11 @@ struct MarkdownWebView: NSViewRepresentable {
             f.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"
             return f
         }()
+        // Several windows append to the same editor.log; tag each line with its
+        // document so the interleaved streams can be told apart.
+        var docTag: String = "?"
         private func appendEditorLog(_ line: String) {
-            guard let data = "\(editorLogStamp.string(from: Date())) \(line)\n".data(using: .utf8) else { return }
+            guard let data = "\(editorLogStamp.string(from: Date())) [\(docTag)] \(line)\n".data(using: .utf8) else { return }
             editorLogHandle?.write(data)
         }
 

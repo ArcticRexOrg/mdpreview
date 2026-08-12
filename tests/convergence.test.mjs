@@ -197,19 +197,39 @@ const ACTIONS = [
 // editor renders blocks.
 function sourceDisplay(t) {
   let out = '';
-  for (const seg of t.win._segments) {
-    if (seg.type === 'space' || seg.transient) continue;
-    const scratch = t.doc.createElement('div');
+  const live = liveSegIndex(t);
+  t.win._segments.forEach((seg, i) => {
+    if (seg.type === 'space' || seg.transient) return;
+    let scratch = t.doc.createElement('div');
     scratch.innerHTML = marked.parse(seg.raw);
     core.stripStructuralWhitespace(scratch);
+    if (i === live) scratch = core.normalizeBoundaryWs(scratch);
     out += scratch.textContent.replace(/\n+$/, '');
-  }
+  });
   return out;
+}
+// Engine whitespace under the live selection is DOM-only state the source
+// legitimately cannot hold — the editor defers that block's re-render rather
+// than eat a just-typed space (see refreshSeg) — so the selection's block is
+// judged modulo edge whitespace, on BOTH sides: the DOM may hold an artifact
+// the source correctly shed, and the source may hold edge whitespace of its
+// own that the DOM legitimately renders. Every other block stays strict, and
+// strictness returns to this one the moment the selection leaves it.
+function liveSegIndex(t) {
+  const sel = t.win.getSelection();
+  if (!sel.rangeCount) return -1;
+  for (const div of t.doc.querySelectorAll('#content [data-seg]'))
+    if (div.contains(sel.anchorNode)) return +div.getAttribute('data-seg');
+  return -1;
+}
+function judged(t, div) {
+  const sel = t.win.getSelection();
+  return sel.rangeCount && div.contains(sel.anchorNode) ? core.normalizeBoundaryWs(div) : div;
 }
 function domDisplay(t) {
   let out = '';
   for (const div of t.doc.querySelectorAll('#content [data-seg]')) {
-    out += div.textContent.replace(/\n+$/, '');
+    out += judged(t, div).textContent.replace(/\n+$/, '');
   }
   return out;
 }
@@ -222,18 +242,20 @@ function domDisplay(t) {
 function skeleton(root) { return core.canonicalOfEl(root); }
 function sourceSkeleton(t) {
   const parts = [];
-  for (const seg of t.win._segments) {
-    if (seg.type === 'space' || seg.transient) continue;
-    const scratch = t.doc.createElement('div');
+  const live = liveSegIndex(t);
+  t.win._segments.forEach((seg, i) => {
+    if (seg.type === 'space' || seg.transient) return;
+    let scratch = t.doc.createElement('div');
     scratch.innerHTML = marked.parse(seg.raw);
     core.stripStructuralWhitespace(scratch);
+    if (i === live) scratch = core.normalizeBoundaryWs(scratch);
     parts.push(skeleton(scratch));
-  }
+  });
   return parts.filter(Boolean).join('|');
 }
 function domSkeleton(t) {
   const parts = [];
-  for (const div of t.doc.querySelectorAll('#content [data-seg]')) parts.push(skeleton(div));
+  for (const div of t.doc.querySelectorAll('#content [data-seg]')) parts.push(skeleton(judged(t, div)));
   return parts.filter(Boolean).join('|');
 }
 
