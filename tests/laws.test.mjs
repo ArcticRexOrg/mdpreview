@@ -283,11 +283,12 @@ test('RATCHET: improvements must be recorded in laws-baseline.json', () => {
   assert.fail(`Laws improved — baseline rewritten, commit it alongside the change.\n${report()}`);
 });
 
-// The standing target, reported as TODO rather than a failure: the ratchets
-// above are the hard gates that must stay green on every commit, and a suite
-// that is permanently red teaches everyone to ignore it. This line is the
-// scoreboard — it turns into a passing test the day the number reaches zero.
-test('GOAL: no block is presented as editable while breaking a law', { todo: true }, () => {
+// This was the scoreboard, carried as a todo while the number came down from
+// 260. It reached zero, so it is a gate now: every block the editor offers for
+// editing is idle-stable, round-trips the caret at every position, and accepts
+// a character wherever one can be written. Blocks that cannot manage that are
+// read-only, and the ratchets above stop that being used as an escape.
+test('no block is presented as editable while breaking a law', () => {
   if (census.editableUnlawful === 0) return;
   assert.fail(`${census.editableUnlawful} blocks accept editing they cannot honour. ` +
     'Each must be either fixed or made read-only.\n' + report());

@@ -248,6 +248,14 @@
           for (k = 0; k < t.text.length; k++) text.push({ ch: t.text.charAt(k), attrs: copyAttrs(attrs) });
           return true;
         case 'codespan':
+          // Two code spans that end up touching are one run of identical chars
+          // here, so the model cannot tell "`a``b`" from "`ab`" and printing
+          // merges them into a single span — which renders differently. They
+          // need not be adjacent in the source: a whitespace-only run between
+          // them renders as an inter-element text node that is stripped, so
+          // "` `\n`  `" arrives here as one run too. Checking the chars
+          // already emitted catches both spellings.
+          if (text.length && !text[text.length - 1].obj && text[text.length - 1].attrs.code) return false;
           a = copyAttrs(attrs); a.code = true;
           for (k = 0; k < t.text.length; k++) text.push({ ch: t.text.charAt(k), attrs: copyAttrs(a) });
           return true;
@@ -276,6 +284,12 @@
       if (!emit(toks[n], {}, toks[n - 1], toks[n + 1])) return null;
       prov.push({ from: from, to: text.length, raw: toks[n].raw, chars: text.slice(from).map(copyChar) });
     }
+    // A blank line cannot live inside a paragraph: printed back it would end
+    // the block and start another. Sources spell it with an entity ("&#10;"),
+    // which this model does not carry, so such a fragment is out of scope.
+    var shown = '';
+    for (var z = 0; z < text.length; z++) if (!text[z].obj) shown += text[z].ch;
+    if (/\n[ \t]*\n/.test(shown)) return null;
     return { text: text, prov: prov };
   }
 
@@ -284,6 +298,16 @@
    * (b/i/del) can't sit on run-boundary whitespace (the delimiters wouldn't
    * lex) and can't survive inside code. Display chars are never changed.
    */
+  // Styled text with emphasis removed from its code characters — the shape the
+  // printer falls back to when the richer nesting has no markdown spelling.
+  function codeExclusive(text) {
+    return text.map(function (c) {
+      var o = copyChar(c);
+      if (o.attrs.code) { delete o.attrs.b; delete o.attrs.i; delete o.attrs.del; }
+      return o;
+    });
+  }
+
   function canonText(text) {
     var out = text.map(copyChar), i;
     for (i = 0; i < out.length; i++) {
@@ -297,10 +321,7 @@
       // model would need a representability check with somewhere to fall back
       // to before this rule can go; until then the strict version is the one
       // that keeps print/parse a round trip.
-      if (out[i].attrs.code || out[i].obj) {
-        if (out[i].obj) { delete out[i].attrs.code; }
-        if (out[i].attrs.code) { delete out[i].attrs.b; delete out[i].attrs.i; delete out[i].attrs.del; }
-      }
+      if (out[i].obj) delete out[i].attrs.code;
     }
     var KEYS = ['b', 'i', 'del'];
     for (var k = 0; k < KEYS.length; k++) {
@@ -541,8 +562,7 @@
   function printInlineParts(text, prov, marked) {
     var B = { s: '', pos: new Array(text.length), end: new Array(text.length) };
     if (!prov || !prov.length || !marked) {
-      printCanonInto(text, 0, text.length, B, false);
-      return B;
+      return canonPrint(text, marked);
     }
     var i = 0, pi = 0;
     while (pi < prov.length && matchChunk(text, i, prov[pi].chars)) {
@@ -582,11 +602,36 @@
     // canonical print, which is always representable.
     B = verified(assemble(true));
     if (!B && i < j) B = verified(assemble(false));
-    if (!B) {
-      B = { s: '', pos: new Array(text.length), end: new Array(text.length) };
-      printCanonInto(text, 0, text.length, B, false);
-    }
+    if (!B) B = canonPrint(text, marked);
     return B;
+  }
+
+  /**
+   * Canonical print of styled text, with one documented retreat.
+   *
+   * Emphasis around a code span is ordinary markdown and prints correctly:
+   * `*foo `x`*`, `**`x`**`, `*`x` `y`*` all round-trip. One shape does not — a
+   * code span whose own content holds a backtick, wrapped in emphasis and
+   * immediately followed by another code span — where marked reads the
+   * delimiters as literal asterisks. Rather than forbid the whole combination
+   * in the model (which made every edit inside an emphasised code span
+   * unreconcilable), print it without the emphasis on the code characters: a
+   * form that is always representable, differing only in styling markdown
+   * declines to express here. The retreat is verified against the degraded
+   * text, never assumed, and is counted by the round-trip property test so a
+   * future printing bug cannot hide behind it.
+   */
+  function canonPrint(text, marked) {
+    var B = { s: '', pos: new Array(text.length), end: new Array(text.length) };
+    printCanonInto(text, 0, text.length, B, false);
+    if (!marked) return B;
+    var re = parseInline(B.s, marked);
+    if (re && textEqM(re.text, canonText(text))) return B;
+    var exText = canonText(codeExclusive(text));
+    var ex = { s: '', pos: new Array(text.length), end: new Array(text.length) };
+    printCanonInto(exText, 0, text.length, ex, false);
+    var reEx = parseInline(ex.s, marked);
+    return (reEx && textEqM(reEx.text, exText)) ? ex : B;
   }
 
   function printInline(text, prov, marked) { return printInlineParts(text, prov, marked).s; }
@@ -831,6 +876,15 @@
         // replaced rejected lazy continuations marked accepts (uneditable).
         var inner = token.tokens.filter(function (t) { return t.type !== 'space'; });
         if (inner.length !== 1 || inner[0].type !== 'paragraph') return null; // multi-block quote — out of model
+        // marked can report a quote's text with whitespace the source never
+        // had: "> foo\nbar\n===" comes back with the "===" indented four
+        // spaces. The display then agrees with the render while every source
+        // offset past the injected run is wrong, which is worse than declining
+        // — a silently misplaced caret rather than a visibly read-only block.
+        var deprefixed = segRaw.replace(/\n+$/, '').split('\n')
+          .map(function (l) { return l.replace(/^[ \t]{0,3}>[ \t]?/, ''); }).join('\n')
+          .replace(/^[ \t]*\n/, '').replace(/\n[ \t]*$/, ''); // blank first/last lines are marked's to drop
+        if (deprefixed !== inner[0].text) return null;
         pr = parseInline(inner[0].text, marked);
         if (!pr) return null;
         content = segRaw.replace(/\n+$/, '');
@@ -1141,6 +1195,12 @@
       }
       if (!subtreeVisible(n)) return true; // zombie/leftover, incl. placeholder <br>
       var a2;
+      // Symmetry with parseInline: two code spans that end up touching are one
+      // run of identical chars in this model, so neither side may accept what
+      // the other refuses — the DOM would read back a block the source parser
+      // cannot fold an edit into.
+      if (READ_INLINE_TAGS[tag] === 'code' && out.length &&
+          !out[out.length - 1].obj && out[out.length - 1].attrs.code) return false;
       if (READ_INLINE_TAGS[tag]) { a2 = copyAttrs(attrs); a2[READ_INLINE_TAGS[tag]] = true; }
       else if (tag === 'A') { a2 = copyAttrs(attrs); a2.link = { href: deBase(n.getAttribute('href')), title: n.getAttribute('title') || '' }; }
       else return false; // visible unknown structure (inputs, wrappers with content)

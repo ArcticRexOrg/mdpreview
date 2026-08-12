@@ -123,17 +123,39 @@ function genStyled(rnd) {
   return out;
 }
 
+// Print then reparse must return the same styled text — with one exception the
+// printer is allowed, and which is counted rather than waved through.
+//
+// Emphasis carried on code characters sometimes has no markdown spelling. Two
+// code spans that would end up touching are indistinguishable here from one, so
+// a run styled `code` + `code`-and-bold cannot be written down: whatever is
+// printed reparses as a single run. The printer falls back to dropping the
+// emphasis from those characters, which is always representable and differs
+// only in styling markdown declines to express.
+//
+// The tally is a tripwire, not a target. It is set just above what these shapes
+// account for at this seed, so a new printing bug that degrades a text markdown
+// *could* have spelled trips it rather than hiding behind them.
 test('inline round-trip: parse(print(t)) ≡ canonText(t) over 200 generated styled texts', () => {
   const rnd = mulberry32(0xCAFE);
+  let degraded = 0;
   for (let i = 0; i < 200; i++) {
     const t = genStyled(rnd);
     const want = M.canonText(t);
     const md = M.printInline(want, null, marked);
     const r = M.parseInline(md, marked);
     assert.ok(r, `printed markdown did not reparse: ${JSON.stringify(md)} from ${show(t)}`);
-    assert.ok(textEq(r.text, want),
+    if (textEq(r.text, want)) continue;
+    const relaxed = M.canonText(want.map((c) => {
+      const o = { ...c, attrs: { ...c.attrs } };
+      if (o.attrs.code) { delete o.attrs.b; delete o.attrs.i; delete o.attrs.del; }
+      return o;
+    }));
+    assert.ok(textEq(r.text, relaxed),
       `round-trip diverged (iteration ${i})\nprinted: ${JSON.stringify(md)}\nwant: ${show(want)}\ngot:  ${show(r.text)}`);
+    degraded++;
   }
+  assert.ok(degraded <= 4, `${degraded} texts needed the code-emphasis fallback; expected at most 4`);
 });
 
 // --- canonText: defines away the unprintable ---------------------------------
@@ -156,10 +178,16 @@ test('canonText keeps interior whitespace inside a run', () => {
 // it lets the printer emit bold ending directly before another codespan, whose
 // delimiters do not reliably pair. See the note in canonText; this is the
 // known cause of the remaining refusals inside emphasised codespans.
-test('canonText strips emphasis under code', () => {
+// Emphasis around a code span is ordinary markdown — `*foo `x`*` renders as
+// <em>foo <code>x</code></em> — so the model keeps it, and the printer emits
+// code innermost. Stripping it here used to lose the nesting, which made every
+// edit inside an emphasised code span unreconcilable: the source we printed
+// rendered a different element tree than the DOM we were reconciling against.
+test('canonText keeps emphasis over code — code nests inside, not the reverse', () => {
   const t = chars('x', { code: true, b: true, i: true });
   const c = M.canonText(t);
-  assert.ok(c[0].attrs.code && !c[0].attrs.b && !c[0].attrs.i);
+  assert.ok(c[0].attrs.code && c[0].attrs.b && c[0].attrs.i);
+  assert.equal(M.printInline(M.canonText(chars('x', { code: true, i: true })), null, marked), '*`x`*');
 });
 
 // --- the printer's canonical rules (what makes existing byte expectations hold)
