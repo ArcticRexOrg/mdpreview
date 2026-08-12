@@ -1507,16 +1507,7 @@
    * 'em'. Implemented as parse → toggleAttr → canonicalize → print with
    * raw-reuse — no delimiter arithmetic.
    */
-  function toggleEmphasis(s, start, end, kind, marked) {
-    var span = inlineFragSpanAt(s, start, end, marked);
-    if (!span) return null;
-    var frag = s.slice(span.fs, span.fe);
-    var pr = parseInline(frag, marked);
-    if (!pr) return null;
-    var a = srcToCharIdx(pr.prov, start - span.fs);
-    var b = srcToCharIdx(pr.prov, end - span.fs);
-    if (a >= b) return null;
-    var attr = kind === 'strong' ? 'b' : 'i';
+  function tryToggle(s, span, pr, a, b, attr, marked) {
     var toggled = toggleAttr(pr.text, a, b, attr);
     if (toggled === pr.text) return null;
     var B = printInlineParts(canonText(toggled), pr.prov, marked);
@@ -1530,6 +1521,37 @@
     if (real.length !== 1 || real[0].type !== span.type) return null;
     if (displayTextOf(md, marked) !== displayTextOf(s, marked)) return null;
     return { md: md, selStart: span.fs + B.pos[a], selEnd: span.fs + B.end[b - 1] };
+  }
+  var EDGE_SLOP = /[\s!-\/:-@\[-`{-~¡¿‐-‧‰-⁞]/;
+  function toggleEmphasis(s, start, end, kind, marked) {
+    var span = inlineFragSpanAt(s, start, end, marked);
+    if (!span) return null;
+    var frag = s.slice(span.fs, span.fe);
+    var pr = parseInline(frag, marked);
+    if (!pr) return null;
+    var a = srcToCharIdx(pr.prov, start - span.fs);
+    var b = srcToCharIdx(pr.prov, end - span.fs);
+    if (a >= b) return null;
+    var attr = kind === 'strong' ? 'b' : 'i';
+    // "Select the words, not the trailing period": when an un-toggle covers a
+    // run except for attributed punctuation/whitespace at its edges, the user
+    // means the whole run — snap to it. Splitting at the selection instead
+    // either refuses outright (a stranded "**.**" is unrepresentable under
+    // flanking rules, so Cmd+B silently did nothing) or leaves silly bold
+    // punctuation behind ('**"**Not today**."**'). A selection that leaves
+    // real letters emphasized on either side is a genuine split and takes the
+    // strict path unchanged.
+    function hasAttr(i) { return i >= 0 && i < pr.text.length && pr.text[i].attrs && pr.text[i].attrs[attr]; }
+    function slop(i) { return hasAttr(i) && pr.text[i].ch != null && EDGE_SLOP.test(pr.text[i].ch); }
+    var covered = true;
+    for (var i = a; i < b; i++) if (!hasAttr(i)) { covered = false; break; }
+    if (covered) {
+      var a2 = a, b2 = b;
+      while (slop(a2 - 1)) a2--;
+      while (slop(b2)) b2++;
+      if ((a2 !== a || b2 !== b) && !hasAttr(a2 - 1) && !hasAttr(b2)) { a = a2; b = b2; }
+    }
+    return tryToggle(s, span, pr, a, b, attr, marked);
   }
 
   // --- StyledDoc model — block ops --------------------------------------------

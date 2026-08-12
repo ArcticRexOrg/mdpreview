@@ -123,3 +123,38 @@ test('toggling the middle word twice restores an equivalent run', () => {
   assert.equal(core.displayTextOf(r2.md, marked), core.displayTextOf(s, marked));
   assert.match(r2.md, /\*two\*/);
 });
+
+// Un-toggling "the words but not the trailing period" of a run must snap to
+// the whole run: leaving only punctuation emphasized ("stream**.**") is
+// unrepresentable under flanking rules, and refusing silently reads as a
+// broken Cmd+B (2026-08-12, the DNV note).
+test('un-bolding a run minus its trailing period snaps to the whole run', () => {
+  const s = '- **We can enable the engineer stream.** GitHub Copilot CLI.\n';
+  const start = s.indexOf('We can');
+  const end = s.indexOf(' stream') + ' stream'.length;
+  const r = core.toggleEmphasis(s, start, end, 'strong', marked);
+  assert.notEqual(r, null, 'the toggle must apply');
+  assert.equal(r.md, '- We can enable the engineer stream. GitHub Copilot CLI.\n');
+});
+
+test('un-bolding words inside quotes-and-period bold snaps over both edges', () => {
+  const s = '**"Not today."** rest\n';
+  const start = s.indexOf('Not');
+  const end = s.indexOf('today') + 'today'.length;
+  const r = core.toggleEmphasis(s, start, end, 'strong', marked);
+  assert.notEqual(r, null, 'the toggle must apply');
+  assert.equal(r.md, '"Not today." rest\n');
+});
+
+test('a genuine mid-run split that is unrepresentable still refuses', () => {
+  // Unselected real letters remain on both sides — not punctuation slop.
+  const s = '**alpha bravo charlie.**\n';
+  const start = s.indexOf('bravo');
+  const r = core.toggleEmphasis(s, start, start + 'bravo'.length, 'strong', marked);
+  // Whatever the strict path decides is fine; the snap must NOT fire and
+  // silently unbold "alpha" or "charlie".
+  if (r) {
+    assert.ok(r.md.includes('**alpha') || r.md.includes('alpha**'), 'alpha stays bold');
+    assert.ok(r.md.includes('charlie.**') || r.md.includes('**charlie'), 'charlie stays bold');
+  }
+});
