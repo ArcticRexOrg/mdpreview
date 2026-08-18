@@ -816,6 +816,25 @@
                 return true;
             }
             seg.raw = rec.raw; relexSeg(seg);
+            // A paragraph EDITED down to a bare thematic-break spelling
+            // becomes a real hr. The reconciler itself folds "---" to the
+            // escaped "\---" (a representable paragraph), so the conversion
+            // hooks the successful fold — and only rec.changed reaches here,
+            // so a document that legitimately contains "\---" never converts
+            // on a mere flush; only typing it does. The block turns
+            // read-only and the caret moves to a fresh paragraph below.
+            var hrText = (div.textContent || '').trim();
+            if (seg.type === 'paragraph' && /^(-{3,}|\*{3,}|_{3,})$/.test(hrText)) {
+                elog('flush seg=' + i + ' — paragraph became an hr: ' + hrText);
+                seg.raw = hrText + ((seg.raw.match(/\n+$/) || [''])[0]);
+                relexSeg(seg);
+                _segments.splice(i + 1, 0, makeTransient());
+                _rawMarkdown = currentMarkdown();
+                renderReading(true);
+                placeCaretInTransient(i + 1);
+                scheduleSave();
+                return true;
+            }
             // A reconciled edit can change inline structure (e.g. deleting an
             // emphasis run's text removes its delimiters from source, but the
             // browser leaves an empty <em> behind that silently formats
@@ -1026,7 +1045,27 @@
             if (t === 'insertText') {
                 // Typing into an empty slot (transient paragraph, or a new empty
                 // <li>) can't be read back from the DOM — fold it into source.
+                // A lone "-" would lex as an empty list item and instantly
+                // bulletize — making "---" untypeable — so it materializes
+                // escaped (displays "-"): dash-space below converts it to the
+                // bullet, three dashes flush-convert to an hr.
+                if (seg && seg.transient && e.data === '-') { e.preventDefault(); materializeTransient(i, '\\-', 2); return; }
                 if (seg && seg.transient && e.data) { e.preventDefault(); materializeTransient(i, e.data, e.data.length); return; }
+                // "- " on a line holding just the escaped dash: the user is
+                // starting a list — unescape into the real empty bullet.
+                if (e.data === ' ' && seg && seg.type === 'paragraph' && /^\\-\n*$/.test(seg.raw)) {
+                    e.preventDefault();
+                    elog('dash-space seg=' + i + ' — starting a list');
+                    pushUndo();
+                    seg.raw = '-' + seg.raw.slice(2);
+                    relexSeg(seg);
+                    _rawMarkdown = currentMarkdown();
+                    renderReading();
+                    var ld = contentEl().querySelector('[data-seg="' + i + '"]');
+                    if (ld) setCaretSource(ld, _segments[i], 1);
+                    scheduleSave();
+                    return;
+                }
                 if (e.data && _pendingEmpty && _pendingEmpty.segIndex === i) {
                     var li = caretAtItemStart(div);
                     if (li && li.textContent === '') { e.preventDefault(); typeIntoEmptyItem(i, e.data); return; }
@@ -1112,6 +1151,38 @@
             sel.removeAllRanges(); sel.addRange(r);
         }
 
+        // Backspace against an hr eats one of its source chars (--- → "--",
+        // which is text again and editable); forward Delete eats from the
+        // other end. A rule with more chars stays a rule until it thins below
+        // three — consistent with "delete removes one source character".
+        // `homeI`/`homeSrc` say where the caret came from, for when the block
+        // is still an hr after the nibble and cannot host a caret itself.
+        function nibbleHr(j, side, homeI, homeSrc) {
+            var seg = _segments[j];
+            var trimmed = seg.raw.replace(/\s+$/, '');
+            elog('nibbleHr seg=' + j + ' side=' + side + ' "' + trimmed + '"');
+            pushUndo();
+            seg.raw = (side < 0 ? trimmed.slice(0, -1) : trimmed.slice(1)) + seg.raw.slice(trimmed.length);
+            relexSeg(seg);
+            _rawMarkdown = currentMarkdown();
+            renderReading();
+            var jd = contentEl().querySelector('[data-seg="' + j + '"]');
+            if (seg.editable && jd) {
+                setCaretSource(jd, seg, side < 0 ? seg.raw.replace(/\s+$/, '').length : contentStartSrc(jd, seg));
+            } else {
+                var hd = contentEl().querySelector('[data-seg="' + homeI + '"]');
+                if (hd && _segments[homeI]) setCaretSource(hd, _segments[homeI], homeSrc);
+            }
+            scheduleSave();
+        }
+        // The nearest non-space segment in `dir` from i, or -1.
+        function adjacentRealSeg(i, dir) {
+            for (var j = i + dir; j >= 0 && j < _segments.length; j += dir) {
+                if (_segments[j].type !== 'space') return j;
+            }
+            return -1;
+        }
+
         // Backspace with the caret at a block's edge is never a plain in-island
         // character delete: it removes an empty (transient) paragraph, merges
         // list items, or merges blocks. Reached from beforeinput when WebKit
@@ -1125,7 +1196,15 @@
             if (!seg.token) return false;
             if (seg.type === 'list' && caretAtItemStart(div)) { e.preventDefault(); doMergeListItem(div); return true; }
             var sel = window.getSelection();
-            if (atBlockStart(sel, div) && i > 0) { e.preventDefault(); doMerge(div); return true; }
+            if (atBlockStart(sel, div) && i > 0) {
+                var p = adjacentRealSeg(i, -1);
+                if (p >= 0 && _segments[p].type === 'hr') {
+                    e.preventDefault();
+                    nibbleHr(p, -1, i, contentStartSrc(div, seg));
+                    return true;
+                }
+                e.preventDefault(); doMerge(div); return true;
+            }
             return false;
         }
 
@@ -1147,6 +1226,7 @@
                 var n = _segments[j];
                 if (n.type === 'space') continue;
                 if (n.transient) { e.preventDefault(); removeTransient(j); return true; }
+                if (n.type === 'hr') { e.preventDefault(); nibbleHr(j, 1, i, local); return true; }
                 if (!n.editable) return false;
                 var nd = contentEl().querySelector('[data-seg="' + j + '"]');
                 if (!nd) return false;

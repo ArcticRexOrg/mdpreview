@@ -1051,3 +1051,78 @@ test('keydown Backspace at the start of a heading merges it into the previous', 
   assert.ok(ev.defaultPrevented, 'must be handled at keydown');
   assert.ok(/alpha one.*Heading/s.test(t.md()) && !/##/.test(t.md()), t.md());
 });
+
+// HR lifecycle: a paragraph typed down to "---" becomes a rule; Backspace
+// just past a rule (or Delete just before) eats one of its source chars, so
+// "---" thins to editable "--" text while a longer rule stays a rule; a
+// cross-block delete spanning a rule removes it outright.
+test('a paragraph edited to --- becomes an hr with the caret below', async () => {
+  const t = await setup('alpha one\n\nbeta two\n');
+  const node = [...t.doc.querySelectorAll('#content p')].map(p => p.firstChild)
+    .find(n => n && /alpha one/.test(n.textContent));
+  node.textContent = '---';
+  t.win.saveNow();
+  assert.equal(t.md(), '---\n\nbeta two\n');
+  assert.ok(t.doc.querySelector('#content hr'), 'renders as a rule');
+  assert.ok(t.win._segments.some(s => s.transient), 'caret host below the rule');
+});
+
+test('Backspace just past an hr thins it to editable text', async () => {
+  const t = await setup('para one\n\n---\n\npara two\n');
+  caret(t.win, { text: 'para two', at: 0 });
+  const ev = pressKey(t.win, 'Backspace');
+  assert.ok(ev.defaultPrevented);
+  assert.equal(t.md(), 'para one\n\n--\n\npara two\n');
+  const dashes = [...t.doc.querySelectorAll('#content [data-seg]')]
+    .find(d => d.textContent.trim() === '--');
+  assert.equal(dashes.getAttribute('contenteditable'), 'true', '"--" is editable text again');
+});
+
+test('Backspace past a five-dash hr leaves a four-dash hr', async () => {
+  const t = await setup('para one\n\n-----\n\npara two\n');
+  caret(t.win, { text: 'para two', at: 0 });
+  pressKey(t.win, 'Backspace');
+  assert.equal(t.md(), 'para one\n\n----\n\npara two\n');
+  assert.ok(t.doc.querySelector('#content hr'), 'still a rule');
+});
+
+test('forward Delete just before an hr thins it from the front', async () => {
+  const t = await setup('para one\n\n---\n\npara two\n');
+  caret(t.win, { text: 'para one', at: 8 });
+  const ev = pressKey(t.win, 'Delete');
+  assert.ok(ev.defaultPrevented);
+  assert.equal(t.md(), 'para one\n\n--\n\npara two\n');
+});
+
+test('a cross-block delete spanning an hr removes it', async () => {
+  const t = await setup('para one\n\n---\n\npara two\n');
+  rangeSelect(t, 'para one', 5, 'para two', 5);
+  dispatchInput(t, 'deleteContentBackward');
+  assert.ok(!/---/.test(t.md()), t.md());
+  assert.ok(/para two/.test(t.md()) && /para /.test(t.md()), t.md());
+});
+
+test('typing dashes on a fresh line reaches an hr; dash-space still bullets', async () => {
+  const t = await setup('alpha one\n');
+  caret(t.win, { text: 'alpha one', at: 9 });
+  beforeInput(t.win, 'insertParagraph');            // transient below
+  beforeInput(t.win, 'insertText', '-');            // escaped literal dash
+  assert.ok(t.md().includes('\\-'), 'lone dash stays literal: ' + JSON.stringify(t.md()));
+  assert.ok(!t.doc.querySelector('#content li'), 'no premature bullet');
+  // continue to "---": simulate the remaining native keystrokes in the DOM
+  const dashNode = [...t.doc.querySelectorAll('#content [data-seg]')]
+    .flatMap(d => [...d.querySelectorAll('p')]).map(p => p.firstChild)
+    .find(n => n && n.textContent === '-');
+  dashNode.textContent = '---';
+  t.win.saveNow();
+  assert.ok(t.doc.querySelector('#content hr'), 'three dashes became a rule');
+  assert.equal(t.md(), 'alpha one\n\n---\n');
+  // and the bullet path: fresh line, dash, space
+  const t2 = await setup('alpha one\n');
+  caret(t2.win, { text: 'alpha one', at: 9 });
+  beforeInput(t2.win, 'insertParagraph');
+  beforeInput(t2.win, 'insertText', '-');
+  beforeInput(t2.win, 'insertText', ' ');
+  assert.ok(t2.doc.querySelector('#content li'), 'dash-space starts a list');
+  assert.ok(!t2.md().includes('\\-'), 'escape gone: ' + JSON.stringify(t2.md()));
+});
