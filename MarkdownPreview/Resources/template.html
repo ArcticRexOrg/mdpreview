@@ -786,6 +786,13 @@
         // can't be mapped to source — the caller then restores the block,
         // which is destructive and must stay rare.
         function flushSegment(div) {
+            // A detached div is a stale snapshot from before a re-render: its
+            // data-seg index points into a segment list that has since
+            // shifted, so folding it writes one block's content over ANOTHER
+            // segment's source. Exactly that corrupted five headings on
+            // 2026-08-19 (an hr conversion re-rendered mid-flushActive; the
+            // loop kept walking the dead divs). Stale divs are inert, always.
+            if (div.isConnected === false) return true;
             var i = segIndexOf(div), seg = _segments[i];
             if (!seg || seg.transient || !seg.token) return true; // no source to fold into
             var rec = EditorCore.reconcileDomEdit(div, seg.token, marked, _baseURL);
@@ -816,25 +823,6 @@
                 return true;
             }
             seg.raw = rec.raw; relexSeg(seg);
-            // A paragraph EDITED down to a bare thematic-break spelling
-            // becomes a real hr. The reconciler itself folds "---" to the
-            // escaped "\---" (a representable paragraph), so the conversion
-            // hooks the successful fold — and only rec.changed reaches here,
-            // so a document that legitimately contains "\---" never converts
-            // on a mere flush; only typing it does. The block turns
-            // read-only and the caret moves to a fresh paragraph below.
-            var hrText = (div.textContent || '').trim();
-            if (seg.type === 'paragraph' && /^(-{3,}|\*{3,}|_{3,})$/.test(hrText)) {
-                elog('flush seg=' + i + ' — paragraph became an hr: ' + hrText);
-                seg.raw = hrText + ((seg.raw.match(/\n+$/) || [''])[0]);
-                relexSeg(seg);
-                _segments.splice(i + 1, 0, makeTransient());
-                _rawMarkdown = currentMarkdown();
-                renderReading(true);
-                placeCaretInTransient(i + 1);
-                scheduleSave();
-                return true;
-            }
             // A reconciled edit can change inline structure (e.g. deleting an
             // emphasis run's text removes its delimiters from source, but the
             // browser leaves an empty <em> behind that silently formats
@@ -1058,6 +1046,31 @@
                 // the DOM, not seg.raw, so it works whether the escaping flush
                 // has already run or the marker's tail keystroke is still
                 // pending.
+                // A dash (or *, _) completing a thematic-break spelling in a
+                // paragraph holding nothing else: the paragraph becomes an hr,
+                // caret on a fresh line below. Event-level ONLY — an earlier
+                // version converted inside flushSegment, and its mid-loop
+                // re-render corrupted every segment after it (2026-08-19).
+                if (seg && seg.type === 'paragraph' && /^[-*_]$/.test(e.data || '') && sel.isCollapsed) {
+                    var ht = ((div.textContent || '').trim()) + e.data;
+                    var hrr = document.createRange();
+                    hrr.selectNodeContents(div);
+                    hrr.setEnd(sel.anchorNode, sel.anchorOffset);
+                    if (/^(-{3,}|\*{3,}|_{3,})$/.test(ht) &&
+                        hrr.toString().trim() === (div.textContent || '').trim()) {
+                        e.preventDefault();
+                        elog('hr-typed seg=' + i + ': ' + ht);
+                        pushUndo();
+                        seg.raw = ht + ((seg.raw.match(/\n+$/) || [''])[0]);
+                        relexSeg(seg);
+                        _segments.splice(i + 1, 0, makeTransient());
+                        _rawMarkdown = currentMarkdown();
+                        renderReading(true);
+                        placeCaretInTransient(i + 1);
+                        scheduleSave();
+                        return;
+                    }
+                }
                 // Marker-space auto-format. "- ", "1. ", "1) " with the caret
                 // right after the marker: alone on the line it realizes an
                 // empty item to type into; at the head of an existing

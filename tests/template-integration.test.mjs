@@ -1062,8 +1062,10 @@ test('a paragraph edited to --- becomes an hr with the caret below', async () =>
   const t = await setup('alpha one\n\nbeta two\n');
   const node = [...t.doc.querySelectorAll('#content p')].map(p => p.firstChild)
     .find(n => n && /alpha one/.test(n.textContent));
-  node.textContent = '---';
-  t.win.saveNow();
+  node.textContent = '--';
+  const r0 = t.doc.createRange(); r0.setStart(node, 2); r0.collapse(true);
+  t.win.getSelection().removeAllRanges(); t.win.getSelection().addRange(r0);
+  beforeInput(t.win, 'insertText', '-');  // the completing dash converts
   assert.equal(t.md(), '---\n\nbeta two\n');
   assert.ok(t.doc.querySelector('#content hr'), 'renders as a rule');
   assert.ok(t.win._segments.some(s => s.transient), 'caret host below the rule');
@@ -1115,8 +1117,10 @@ test('typing dashes on a fresh line reaches an hr; dash-space still bullets', as
   const dashNode = [...t.doc.querySelectorAll('#content [data-seg]')]
     .flatMap(d => [...d.querySelectorAll('p')]).map(p => p.firstChild)
     .find(n => n && n.textContent === '-');
-  dashNode.textContent = '---';
-  t.win.saveNow();
+  dashNode.textContent = '--';
+  const r1 = t.doc.createRange(); r1.setStart(dashNode, 2); r1.collapse(true);
+  t.win.getSelection().removeAllRanges(); t.win.getSelection().addRange(r1);
+  beforeInput(t.win, 'insertText', '-');
   assert.ok(t.doc.querySelector('#content hr'), 'three dashes became a rule');
   assert.equal(t.md(), 'alpha one\n\n---\n');
   // and the bullet path: fresh line, dash, space
@@ -1254,4 +1258,19 @@ test('a space typed mid-paragraph after a coincidental "1." does not convert', a
   caret(t.win, { text: 'rating', at: 6 });
   const ev = beforeInput(t.win, 'insertText', ' ');
   assert.ok(!t.doc.querySelector('#content ol'), 'no conversion away from the marker');
+});
+
+// The 2026-08-19 corruption: an hr conversion inside flushSegment re-rendered
+// mid-flushActive, and the loop kept folding DETACHED divs whose data-seg
+// indices pointed into the shifted segment list — one block's content wrote
+// over another segment's source, deleting five headings. Stale divs are
+// inert, always.
+test('a stale (detached) div never folds into the segments', async () => {
+  const t = await setup('alpha one\n\nbeta two\n');
+  const stale = t.doc.querySelector('[data-seg="0"]');
+  stale.querySelector('p').firstChild.textContent = 'MUTATED';
+  await t.win.renderReading();          // rebuild — `stale` is now detached
+  assert.ok(!stale.isConnected, 'div must be detached after the re-render');
+  assert.equal(t.win.flushSegment(stale), true, 'stale flush is a no-op, not a refusal');
+  assert.equal(t.md(), 'alpha one\n\nbeta two\n', 'no stale content folded');
 });
