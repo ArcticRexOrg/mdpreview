@@ -184,6 +184,10 @@
            content never enters textContent, so the reconciler never sees it,
            and document/PDF mode renders without it. Inherits the heading's
            color so every theme keeps its own contrast. */
+        /* Reserve a real gutter: themes with little body padding otherwise
+           clip the badges at the pane edge (they sit outside the heading
+           box). Editing view only — #content does not exist in paged mode. */
+        #content { padding-left: 3.1em; }
         #content .seg h1, #content .seg h2, #content .seg h3,
         #content .seg h4, #content .seg h5, #content .seg h6 { position: relative; }
         #content .seg h1::before, #content .seg h2::before, #content .seg h3::before,
@@ -196,7 +200,7 @@
             font: 600 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
             letter-spacing: 0.02em;
             color: inherit;
-            opacity: 0.35;
+            opacity: 0.45;
             pointer-events: none;
         }
         #content .seg h1::before { content: "H1"; }
