@@ -1115,6 +1115,43 @@
             scheduleSave();
         }
 
+        // Shift the block's heading level (dir +1 bigger, -1 smaller; ladder
+        // paragraph ↔ H6 ↔ … ↔ H1). The selection survives the op by source
+        // offset — shifted by the prefix-length change, clamped — so a held
+        // key walks the ladder without reselecting.
+        function doHeadingShift(div, dir) {
+            if (!flushSegment(div)) { revertSeg(div); return; }
+            var i = segIndexOf(div), seg = _segments[i];
+            if (!seg || seg.transient || !seg.token) return;
+            function prefixLen(s) { var m = s.match(/^ {0,3}#{1,6}[ \t]+/); return m ? m[0].length : 0; }
+            var sel = window.getSelection(), sa = null, sb = null;
+            if (sel.rangeCount) {
+                var r = sel.getRangeAt(0);
+                if (segDivFor(r.startContainer) === div && segDivFor(r.endContainer) === div) {
+                    sa = EditorCore.domOffsetToSourceOffset(div, r.startContainer, r.startOffset, seg.token);
+                    sb = EditorCore.domOffsetToSourceOffset(div, r.endContainer, r.endOffset, seg.token);
+                }
+            }
+            var next = EditorCore.headingShift(seg.raw, dir, marked);
+            if (next === null) { elog('headingShift no-op seg=' + i + ' dir=' + dir); return; }
+            elog('headingShift seg=' + i + ' dir=' + dir + ' -> ' + exc(next, 40));
+            pushUndo();
+            var delta = prefixLen(next) - prefixLen(seg.raw);
+            seg.raw = next;
+            relexSeg(seg);
+            _rawMarkdown = currentMarkdown();
+            renderReading();
+            var d2 = contentEl().querySelector('[data-seg="' + i + '"]'), s2 = _segments[i];
+            if (d2 && s2 && sa !== null && sb !== null) {
+                var lo = prefixLen(next), hi = s2.raw.replace(/\s+$/, '').length;
+                var na = Math.max(lo, Math.min(sa + delta, hi));
+                var nb = Math.max(lo, Math.min(sb + delta, hi));
+                if (na === nb) setCaretSource(d2, s2, na);
+                else setSelectionSource(d2, s2, na, nb);
+            }
+            scheduleSave();
+        }
+
         function doEmphasis(div, kind) {
             elog('doEmphasis ' + kind + ' | ' + selDesc());
             if (!flushSegment(div)) { revertSeg(div); return; }
@@ -1512,6 +1549,17 @@
             // Cmd+Z / Cmd+Shift+Z — WKWebView never delivers these as historyUndo
             // beforeinput events, so intercept the keystroke directly (as for B/I).
             if (k === 'z') { elog('keydown Cmd+' + (e.shiftKey ? 'Shift+' : '') + 'Z'); e.preventDefault(); if (e.shiftKey) redo(); else undo(); return; }
+            // Shift+Cmd+H / Shift+Cmd+G — heading level up / down the ladder.
+            if (e.shiftKey && (k === 'h' || k === 'g')) {
+                elog('keydown Cmd+Shift+' + k.toUpperCase() + ' | ' + selDesc());
+                var hsel = window.getSelection();
+                if (!hsel.rangeCount) return;
+                var hdiv = segDivFor(hsel.anchorNode);
+                if (!hdiv) return;
+                e.preventDefault();
+                doHeadingShift(hdiv, k === 'h' ? 1 : -1);
+                return;
+            }
             if (e.shiftKey) return;
             if (k !== 'b' && k !== 'i') return;
             elog('keydown Cmd+' + k.toUpperCase() + ' | ' + selDesc());
@@ -1609,6 +1657,33 @@
             if (!crossBlockSel()) { exitCrossMode(); return; } // stray state — restore, fall through
             if (meta && k === 'z') { e.preventDefault(); e.stopPropagation(); if (e.shiftKey) redo(); else undo(); return; }
             if (meta && k === 'c') return; // native copy of the page selection
+            // Shift+Cmd+H/G over a cross-block selection: shift every heading/
+            // paragraph block the selection touches. The re-render collapses
+            // the parked selection; the caret lands at the first block.
+            if (meta && e.shiftKey && (k === 'h' || k === 'g')) {
+                e.preventDefault(); e.stopPropagation();
+                var hcb = crossBlockSel();
+                if (!hcb) return;
+                var hd = k === 'h' ? 1 : -1;
+                var ia = segIndexOf(hcb.da), ib = segIndexOf(hcb.db), shifted = 0;
+                for (var hi = ia; hi <= ib; hi++) {
+                    var hs = _segments[hi];
+                    if (!hs || hs.type === 'space' || hs.transient || !hs.token) continue;
+                    var hn = EditorCore.headingShift(hs.raw, hd, marked);
+                    if (hn === null) continue;
+                    if (!shifted) pushUndo();
+                    shifted++;
+                    hs.raw = hn;
+                    relexSeg(hs);
+                }
+                elog('headingShift cross seg=' + ia + '→' + ib + ' dir=' + hd + ' shifted=' + shifted);
+                if (!shifted) return;
+                _rawMarkdown = currentMarkdown();
+                renderReading();
+                restoreGlobalCaret(priorLen(ia));
+                scheduleSave();
+                return;
+            }
             if (e.key === 'Escape' || (/^Arrow/.test(e.key) && !e.shiftKey)) {
                 e.preventDefault(); e.stopPropagation();
                 var sel = window.getSelection();

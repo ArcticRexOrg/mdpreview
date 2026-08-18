@@ -884,3 +884,61 @@ test('keydown forward Delete at the end of a paragraph merges the next one up', 
   assert.ok(ev.defaultPrevented, 'must be handled at keydown — no beforeinput will come');
   assert.equal(t.md(), 'alpha onebeta two\n');
 });
+
+// Shift+Cmd+H / Shift+Cmd+G: heading level up/down the ladder
+// paragraph ↔ H6 ↔ … ↔ H1 (the only arrangement where the keys are exact
+// inverses at every step). Block-level: caret or any selection identifies
+// the block; a cross-block (or Cmd+A) selection shifts every block it
+// touches.
+test('Shift+Cmd+H walks a paragraph up the ladder; Shift+Cmd+G back down', async () => {
+  const t = await setup('alpha beta\n');
+  caret(t.win, { text: 'alpha', at: 2 });
+  pressKey(t.win, 'H', { metaKey: true, shiftKey: true });
+  assert.equal(t.md(), '###### alpha beta\n');
+  pressKey(t.win, 'H', { metaKey: true, shiftKey: true });
+  assert.equal(t.md(), '##### alpha beta\n');
+  pressKey(t.win, 'G', { metaKey: true, shiftKey: true });
+  pressKey(t.win, 'G', { metaKey: true, shiftKey: true });
+  assert.equal(t.md(), 'alpha beta\n');
+});
+
+test('Shift+Cmd+H at H1 is a no-op', async () => {
+  const t = await setup('# top\n');
+  caret(t.win, { text: 'top', at: 1 });
+  pressKey(t.win, 'H', { metaKey: true, shiftKey: true });
+  assert.equal(t.md(), '# top\n');
+});
+
+test('demoting a heading whose text lexes as structure escapes the lead', async () => {
+  const t = await setup('###### 1. Data residency\n');
+  caret(t.win, { text: 'Data', at: 0 });
+  pressKey(t.win, 'G', { metaKey: true, shiftKey: true });
+  assert.equal(t.md(), '1\\. Data residency\n');
+  // and back up: the escape comes off again
+  pressKey(t.win, 'H', { metaKey: true, shiftKey: true });
+  assert.equal(t.md(), '###### 1. Data residency\n');
+});
+
+test('promoting a soft-wrapped paragraph joins its lines', async () => {
+  const t = await setup('alpha beta\ngamma delta\n');
+  caret(t.win, { text: 'gamma', at: 0 });
+  pressKey(t.win, 'H', { metaKey: true, shiftKey: true });
+  assert.equal(t.md(), '###### alpha beta gamma delta\n');
+});
+
+test('the selection survives a heading shift for key-repeat', async () => {
+  const t = await setup('alpha beta\n');
+  rangeSelect(t, 'beta', 0, 'beta', 4);
+  pressKey(t.win, 'H', { metaKey: true, shiftKey: true });
+  assert.equal(t.md(), '###### alpha beta\n');
+  assert.equal(t.win.getSelection().toString(), 'beta', 'selection must survive the re-render');
+});
+
+test('Shift+Cmd+H over a select-all shifts every block it touches', async () => {
+  const t = await setup('# top\n\npara one\n');
+  caret(t.win, { text: 'para', at: 0 });
+  pressDocKey(t, 'a', { metaKey: true });   // select-all parks the blocks
+  const ev = pressDocKey(t, 'H', { metaKey: true, shiftKey: true });
+  assert.ok(ev.defaultPrevented, 'must be handled, not refused');
+  assert.equal(t.md(), '# top\n\n###### para one\n');
+});

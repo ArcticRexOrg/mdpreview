@@ -1559,6 +1559,61 @@
     return tryToggle(s, span, pr, a, b, attr, marked);
   }
 
+  /**
+   * Shift a block's heading level along the ladder paragraph ↔ H6 ↔ … ↔ H1.
+   * dir +1 grows (toward H1), -1 shrinks; a paragraph promotes to H6, an H6
+   * demotes to a paragraph — the only arrangement where the two keys are
+   * exact inverses at every step. Wrapped paragraph lines join on promotion
+   * (headings are one line). A demoted heading whose text would lex as
+   * structure ("1. Data residency" is an ordered list) gets its lead escaped
+   * ("1\. Data residency"). Setext headings respell as ATX on first touch.
+   * Returns the new segment source, or null when there is nowhere to go or
+   * no spelling keeps the text (caller no-ops).
+   */
+  function headingShift(raw, dir, marked) {
+    var tok;
+    try { tok = marked.lexer(raw)[0]; } catch (_) { return null; }
+    if (!tok || (tok.type !== 'heading' && tok.type !== 'paragraph')) return null;
+    var sep = (raw.match(/\n*$/) || [''])[0] || '\n';
+    var text, level, expDisp = displayTextOf(raw, marked);
+    if (expDisp === null) return null;
+    if (tok.type === 'heading') { level = tok.depth; text = tok.text; }
+    else {
+      if (dir < 0) return null;                        // already at the bottom
+      level = 7;
+      text = raw.replace(/\n+$/, '').replace(/[ \t]*\n[ \t]*/g, ' ');
+      expDisp = expDisp.replace(/[ \t]*\n[ \t]*/g, ' ');
+    }
+    var newLevel = level - dir;
+    if (newLevel < 1 || newLevel > 7) return null;
+    function ok(cand) {
+      var toks;
+      try { toks = marked.lexer(cand); } catch (_) { return null; }
+      var real = toks.filter(function (t) { return t.type !== 'space'; });
+      if (real.length !== 1) return null;
+      if (newLevel > 6 ? real[0].type !== 'paragraph'
+                       : (real[0].type !== 'heading' || real[0].depth !== newLevel)) return null;
+      return displayTextOf(cand, marked) === expDisp ? cand : null;
+    }
+    if (newLevel <= 6) {
+      var hashes = new Array(newLevel + 1).join('#');
+      // A lead escape this op added on demote ("1\. Data") is unneeded inside
+      // a heading — take it back off, so demote/promote round-trips exactly.
+      var unesc = text.replace(/^(\d{1,9})\\([.)])/, '$1$2').replace(/^\\([-+*#>`~])/, '$1');
+      if (unesc !== text) {
+        var u = ok(hashes + ' ' + unesc + sep);
+        if (u !== null) return u;
+      }
+      return ok(hashes + ' ' + text + sep);
+    }
+    var plain = ok(text + sep);
+    if (plain !== null) return plain;
+    var m = /^(\d{1,9})([.)])/.exec(text);
+    var esc = m ? m[1] + '\\' + m[2] + text.slice(m[0].length)
+                : /^[-+*#>`~]/.test(text) ? '\\' + text : null;
+    return esc === null ? null : ok(esc + sep);
+  }
+
   // --- StyledDoc model — block ops --------------------------------------------
   //
   // Each op is a function on the block list — definitional, no delimiters.
@@ -2510,6 +2565,7 @@
     leadingFrontmatter: leadingFrontmatter,
     isEditableBlock: isEditableBlock,
     toggleEmphasis: toggleEmphasis,
+    headingShift: headingShift,
     splitBlock: splitBlock,
     mergeBlock: mergeBlock,
     mergeListItem: mergeListItem,
