@@ -1274,3 +1274,18 @@ test('a stale (detached) div never folds into the segments', async () => {
   assert.equal(t.win.flushSegment(stale), true, 'stale flush is a no-op, not a refusal');
   assert.equal(t.md(), 'alpha one\n\nbeta two\n', 'no stale content folded');
 });
+
+// Enter at the START of a heading: "at the start" must be judged in display
+// space — the caret maps past "## ", and the old whitespace-only-prefix test
+// split the heading into an empty "##" husk plus a bare paragraph, stranding
+// an unmappable caret (and the viewport at the top of the document).
+test('Enter at the start of a heading opens a paragraph above, intact heading', async () => {
+  const t = await setup('para before\n\n## The vendor landscape\n');
+  caret(t.win, { text: 'The vendor', at: 0 });
+  beforeInput(t.win, 'insertParagraph');
+  assert.ok(t.md().includes('## The vendor landscape'), 'heading intact: ' + JSON.stringify(t.md()));
+  assert.ok(!/^##\s*$/m.test(t.md()), 'no empty-heading husk');
+  assert.ok(t.win._segments.some(s => s.transient), 'transient paragraph above');
+  beforeInput(t.win, 'insertText', 'x');
+  assert.equal(t.md().replace(/\n+$/, ''), 'para before\n\nx\n\n## The vendor landscape');
+});
