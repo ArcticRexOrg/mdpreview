@@ -2316,13 +2316,19 @@
     for (i = els.length - 1; i >= 0; i--) {
       var p; e = els[i]; p = e.parentNode;
       if (!p) continue;
-      while ((n = e.firstChild) && n.nodeType === 3 && (m = /^\s+/.exec(n.textContent))) {
+      // Empty text nodes — deletion husks — are not edges; drop them (this is
+      // a clone) so they can't shield real edge whitespace from the hoist.
+      while ((n = e.firstChild) && n.nodeType === 3) {
+        if (!n.textContent) { e.removeChild(n); continue; }
+        if (!(m = /^\s+/.exec(n.textContent))) break;
         if (m[0] === n.textContent) { p.insertBefore(n, e); continue; }
         p.insertBefore(root.ownerDocument.createTextNode(m[0]), e);
         n.textContent = n.textContent.slice(m[0].length);
         break;
       }
-      while ((n = e.lastChild) && n.nodeType === 3 && (m = /\s+$/.exec(n.textContent))) {
+      while ((n = e.lastChild) && n.nodeType === 3) {
+        if (!n.textContent) { e.removeChild(n); continue; }
+        if (!(m = /\s+$/.exec(n.textContent))) break;
         if (m[0] === n.textContent) { p.insertBefore(n, e.nextSibling); continue; }
         p.insertBefore(root.ownerDocument.createTextNode(m[0]), e.nextSibling);
         n.textContent = n.textContent.slice(0, -m[0].length);

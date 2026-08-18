@@ -374,3 +374,19 @@ test('emptied strong at a paragraph start folds; leading space trims', () => {
   assert.ok(r && r.changed, 'edit must fold, not revert');
   assert.equal(r.raw.replace(/\n+$/, ''), 'tail');
 });
+
+// The same husk one layer up: a delete from the start of a bold run through
+// a nested em leaves <strong>["", " c"]</strong> — the empty text node
+// blocked the emphasis-edge whitespace hoist, so the mid-block leading space
+// stayed inside the run and every candidate failed the canon check.
+test('a deletion husk inside a strong does not block the edge-whitespace hoist', () => {
+  const t = renderBlock('a **b *i* c** d\n');
+  const strong = t.el.querySelector('strong');
+  const em = t.el.querySelector('em');
+  strong.firstChild.textContent = '';      // "b " fully selected → husk
+  em.parentNode.removeChild(em);           // em fully inside the selection
+  const r = core.reconcileDomEdit(t.el, t.token, marked);
+  assert.ok(r && r.changed, 'edit must fold, not revert: ' + core.reconcileTrace());
+  // both spaces around the deleted "b *i*" survive, hoisted out of the run
+  assert.equal(r.raw.replace(/\n+$/, ''), 'a  **c** d');
+});
