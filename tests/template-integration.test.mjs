@@ -71,7 +71,9 @@ function caret(win, where) {
 
 function beforeInput(win, inputType, data) {
   const ev = new win.InputEvent('beforeinput', { inputType, data: data ?? null, bubbles: true, cancelable: true });
-  win.getSelection().anchorNode.parentNode.dispatchEvent(ev);
+  const a = win.getSelection().anchorNode;
+  (a.nodeType === 1 ? a : a.parentNode).dispatchEvent(ev);
+  return ev;
 }
 function pressTab(win, shift) {
   const ev = new win.KeyboardEvent('keydown', { key: 'Tab', shiftKey: !!shift, bubbles: true, cancelable: true });
@@ -1189,6 +1191,8 @@ test('typing "1. " on a fresh line starts a numbered list', async () => {
   const n = [...t.doc.querySelectorAll('#content p')].map(p => p.firstChild)
     .find(x => x && x.textContent === '1');
   n.textContent = '1.';
+  const sr = t.doc.createRange(); sr.setStart(n, 2); sr.collapse(true);
+  t.win.getSelection().removeAllRanges(); t.win.getSelection().addRange(sr);
   beforeInput(t.win, 'insertText', ' ');       // marker-space converts
   assert.ok(t.doc.querySelector('#content ol'), 'ordered list started');
   beforeInput(t.win, 'insertText', 'x');
@@ -1206,7 +1210,48 @@ test('a "2." start keeps its own numbering', async () => {
   const n = [...t.doc.querySelectorAll('#content p')].map(p => p.firstChild)
     .find(x => x && x.textContent === '2');
   n.textContent = '2.';
+  const sr = t.doc.createRange(); sr.setStart(n, 2); sr.collapse(true);
+  t.win.getSelection().removeAllRanges(); t.win.getSelection().addRange(sr);
   beforeInput(t.win, 'insertText', ' ');
   beforeInput(t.win, 'insertText', 'x');
   assert.equal(t.md().replace(/\n+$/, ''), 'alpha one\n\n2. x');
+});
+
+// The word-processor gesture from the 01:42 log: typing "1. " at the HEAD of
+// an existing paragraph converts that paragraph into the numbered item —
+// no empty-item-and-merge dance.
+test('typing "1. " at the head of a paragraph converts it to a numbered item', async () => {
+  const t = await setup('**Credibility:** your customers\n');
+  // native "1." typed at the head; emulate the DOM state, caret after the "."
+  const p = t.doc.querySelector('#content p');
+  const lead = t.doc.createTextNode('1.');
+  p.insertBefore(lead, p.firstChild);
+  const sel = t.win.getSelection(), r = t.doc.createRange();
+  r.setStart(lead, 2); r.collapse(true);
+  sel.removeAllRanges(); sel.addRange(r);
+  beforeInput(t.win, 'insertText', ' ');
+  assert.equal(t.md().replace(/\n+$/, ''), '1. **Credibility:** your customers');
+  assert.ok(t.doc.querySelector('#content ol'), 'renders as an ordered list');
+  const s2 = t.win.getSelection();
+  assert.ok(/Credibility/.test(s2.anchorNode.textContent), 'caret at the text it prefixed');
+  assert.equal(s2.anchorOffset, 0);
+});
+
+test('typing "- " at the head of a paragraph converts it to a bullet', async () => {
+  const t = await setup('plain words here\n');
+  const p = t.doc.querySelector('#content p');
+  const lead = t.doc.createTextNode('-');
+  p.insertBefore(lead, p.firstChild);
+  const sel = t.win.getSelection(), r = t.doc.createRange();
+  r.setStart(lead, 1); r.collapse(true);
+  sel.removeAllRanges(); sel.addRange(r);
+  beforeInput(t.win, 'insertText', ' ');
+  assert.equal(t.md().replace(/\n+$/, ''), '- plain words here');
+});
+
+test('a space typed mid-paragraph after a coincidental "1." does not convert', async () => {
+  const t = await setup('1\\. is a rating, not a list\n');
+  caret(t.win, { text: 'rating', at: 6 });
+  const ev = beforeInput(t.win, 'insertText', ' ');
+  assert.ok(!t.doc.querySelector('#content ol'), 'no conversion away from the marker');
 });

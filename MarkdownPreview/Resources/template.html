@@ -1058,18 +1058,39 @@
                 // the DOM, not seg.raw, so it works whether the escaping flush
                 // has already run or the marker's tail keystroke is still
                 // pending.
-                if (e.data === ' ' && seg && seg.type === 'paragraph') {
-                    var mk = (div.textContent || '').trim();
-                    if (/^(-|\d{1,9}[.)])$/.test(mk)) {
+                // Marker-space auto-format. "- ", "1. ", "1) " with the caret
+                // right after the marker: alone on the line it realizes an
+                // empty item to type into; at the head of an existing
+                // paragraph it converts THAT paragraph into the item (the
+                // word-processor gesture — no empty-item-and-merge dance).
+                // The gesture test is pure DOM: the text before the caret IS
+                // the marker. The lone marker only exists as escaped literal
+                // text, which is what made it typeable at all.
+                if (e.data === ' ' && seg && seg.type === 'paragraph' && sel.isCollapsed) {
+                    var mm = (div.textContent || '').match(/^(-|\d{1,9}[.)])/);
+                    var rr = document.createRange();
+                    rr.selectNodeContents(div);
+                    rr.setEnd(sel.anchorNode, sel.anchorOffset);
+                    if (mm && rr.toString() === mm[1]) {
+                        if (!flushSegment(div)) { revertSeg(div); return; }
+                        seg = _segments[i];
+                        var body = mm[1] === '-'
+                            ? seg.raw.replace(/^\\?-[ \t]*/, '')
+                            : seg.raw.replace(/^(\d{1,9})\\?([.)])[ \t]*/, '');
+                        var bare = /^\s*$/.test(body);
+                        var cand2 = bare ? mm[1] + body : mm[1] + ' ' + body;
+                        var ctok;
+                        try { ctok = marked.lexer(cand2).filter(function (t) { return t.type !== 'space'; }); } catch (_) { ctok = []; }
+                        if (ctok.length !== 1 || ctok[0].type !== 'list') return; // no clean spelling — stay literal
                         e.preventDefault();
-                        elog('marker-space seg=' + i + ' — starting a list: ' + mk);
+                        elog('marker-space seg=' + i + ' — ' + (bare ? 'starting a list: ' : 'paragraph becomes item: ') + mm[1]);
                         pushUndo();
-                        seg.raw = mk + ((seg.raw.match(/\n+$/) || [''])[0]);
+                        seg.raw = cand2;
                         relexSeg(seg);
                         _rawMarkdown = currentMarkdown();
                         renderReading();
                         var ld = contentEl().querySelector('[data-seg="' + i + '"]');
-                        if (ld) setCaretSource(ld, _segments[i], mk.length);
+                        if (ld) setCaretSource(ld, _segments[i], bare ? mm[1].length : contentStartSrc(ld, _segments[i]));
                         scheduleSave();
                         return;
                     }
