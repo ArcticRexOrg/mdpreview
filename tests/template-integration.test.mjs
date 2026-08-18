@@ -768,3 +768,52 @@ test('click on a fragment link scrolls in place, never leaves the page', async (
   assert.ok(ev.defaultPrevented, 'handled in page');
   if (h) assert.ok(scrolled, 'scrolled to the anchor');
 });
+
+// WebKit fires no beforeinput for a Backspace/Delete with nothing to consume
+// inside the block's own contenteditable island (block start, empty block,
+// block end) — so these ops must ride the keydown. The older merge tests
+// above dispatch beforeinput directly, which real WebKit never sends at a
+// block edge; these drive the keydown path the app actually gets.
+function pressKey(win, key, opts = {}) {
+  const sel = win.getSelection();
+  const target = sel.anchorNode.nodeType === 1 ? sel.anchorNode : sel.anchorNode.parentNode;
+  const ev = new win.KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...opts });
+  target.dispatchEvent(ev);
+  return ev;
+}
+
+test('keydown Backspace at the start of a paragraph merges it into the previous', async () => {
+  const t = await setup('alpha one\n\nbeta two\n');
+  caret(t.win, { text: 'beta', at: 0 });
+  const ev = pressKey(t.win, 'Backspace');
+  assert.ok(ev.defaultPrevented, 'must be handled at keydown — no beforeinput will come');
+  assert.equal(t.md(), 'alpha onebeta two\n');
+});
+
+test('keydown Backspace at the start of the first list item outdents it', async () => {
+  const t = await setup('- one\n- two\n');
+  caret(t.win, { text: 'one', at: 0 });
+  const ev = pressKey(t.win, 'Backspace');
+  assert.ok(ev.defaultPrevented);
+  assert.equal(t.md(), 'one\n\n- two\n');
+});
+
+test('keydown Backspace removes an empty (transient) paragraph', async () => {
+  const t = await setup('alpha one\n');
+  caret(t.win, { text: 'alpha one', at: 9 });
+  beforeInput(t.win, 'insertParagraph'); // transient empty paragraph below
+  const ev = pressKey(t.win, 'Backspace');
+  assert.ok(ev.defaultPrevented);
+  assert.equal(t.md(), 'alpha one\n');
+  assert.ok(!t.win._segments.some((s) => s.transient), 'transient gone');
+});
+
+test('Enter at the start of a paragraph opens an empty paragraph above, typing fills it', async () => {
+  const t = await setup('alpha one\n\nbeta two\n');
+  caret(t.win, { text: 'beta', at: 0 });
+  beforeInput(t.win, 'insertParagraph');
+  assert.equal(t.md().replace(/\n+$/, '\n'), 'alpha one\n\nbeta two\n', 'no bytes until typed into');
+  assert.ok(t.win._segments.some((s) => s.transient), 'transient paragraph present');
+  beforeInput(t.win, 'insertText', 'x');
+  assert.equal(t.md(), 'alpha one\n\nx\n\nbeta two\n');
+});

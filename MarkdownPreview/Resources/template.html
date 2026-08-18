@@ -970,11 +970,7 @@
             }
             if (t === 'insertReplacementText' || t === 'insertCompositionText') { pushTypingUndo(); scheduleSave(); return; }
             if (t.indexOf('delete') === 0) {
-                if (t === 'deleteContentBackward') {
-                    if (seg && seg.transient) { e.preventDefault(); removeTransient(i); return; }
-                    if (seg && seg.type === 'list' && caretAtItemStart(div)) { e.preventDefault(); doMergeListItem(div); return; }
-                    if (atBlockStart(sel, div) && i > 0) { e.preventDefault(); doMerge(div); return; }
-                }
+                if (t === 'deleteContentBackward' && backspaceAtBlockEdge(e, div)) return;
                 pushTypingUndo(); scheduleSave(); return;
             }
             if (t === 'formatBold') { e.preventDefault(); doEmphasis(div, 'strong'); return; }
@@ -983,6 +979,23 @@
             if (t === 'historyUndo') { e.preventDefault(); undo(); return; }
             if (t === 'historyRedo') { e.preventDefault(); redo(); return; }
             e.preventDefault(); // out of vocabulary (hr, colour, drop, paste handled below)
+        }
+
+        // Backspace with the caret at a block's edge is never a plain in-island
+        // character delete: it removes an empty (transient) paragraph, merges
+        // list items, or merges blocks. Reached from beforeinput when WebKit
+        // sends one, and from keydown when it doesn't (nothing inside the
+        // island to delete = no event at all). Returns true when handled.
+        function backspaceAtBlockEdge(e, div) {
+            if (!div) return false;
+            var i = segIndexOf(div), seg = _segments[i];
+            if (!seg) return false;
+            if (seg.transient) { e.preventDefault(); removeTransient(i); return true; }
+            if (!seg.token) return false;
+            if (seg.type === 'list' && caretAtItemStart(div)) { e.preventDefault(); doMergeListItem(div); return true; }
+            var sel = window.getSelection();
+            if (atBlockStart(sel, div) && i > 0) { e.preventDefault(); doMerge(div); return true; }
+            return false;
         }
 
         function onPaste(e) {
@@ -1035,6 +1048,16 @@
             var res = EditorCore.splitBlock(seg.raw, local, marked);
             if (res.exit) { doListExit(i, res.before, res.after); return; } // Return on empty item
             pushUndo();
+            // Start-of-block Return → a transient empty paragraph ABOVE, caret
+            // in it (mirror of the end case below; splitBlock's "\n\n" prefix
+            // would render to nothing, which is why this used to look dead).
+            if (seg.type !== 'list' && /^\s*$/.test(res.md.slice(0, res.caret))) {
+                _segments.splice(i, 0, makeTransient());
+                renderReading(true);
+                placeCaretInTransient(i);
+                scheduleSave();
+                return;
+            }
             // End-of-block Return on a paragraph/heading → a transient empty
             // paragraph (the editor has no source bytes for an empty block).
             if (seg.type !== 'list' && res.md.slice(res.caret).replace(/\s+$/, '') === '') {
@@ -1208,7 +1231,9 @@
             var caretBase = parts.join('\n\n').length + (parts.length ? 2 : 0);
             parts.push(blockMd);
             if (after) parts.push(after);
-            _rawMarkdown = parts.join('\n\n') + '\n';
+            // A non-empty `after` keeps its own trailing newline, so trim before
+            // terminating — else the document gains a blank line per realize.
+            _rawMarkdown = parts.join('\n\n').replace(/\s+$/, '') + '\n';
             renderReading();
             restoreGlobalCaret(caretBase + caretInBlock);
             scheduleSave();
@@ -1350,6 +1375,15 @@
             if (_currentMode !== 'reading' || _conflicts.length) return;
             if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && !e.shiftKey && !e.metaKey && !e.altKey) {
                 if (crossBlockArrow(e.key === 'ArrowUp' ? -1 : 1)) { elog('keydown ' + e.key + ' cross-block hop'); e.preventDefault(); }
+                return;
+            }
+            // Backspace with nothing to delete inside the block's own island
+            // (block start, empty transient) never fires a beforeinput at all
+            // — WebKit won't start an edit that would cross the contenteditable
+            // boundary — so the edge cases must be caught at the keystroke.
+            if (e.key === 'Backspace' && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+                var bsel = window.getSelection();
+                if (bsel.rangeCount && bsel.isCollapsed && backspaceAtBlockEdge(e, segDivFor(bsel.anchorNode))) return;
                 return;
             }
             // Tab / Shift+Tab — not delivered as beforeinput by WKWebView. On a
