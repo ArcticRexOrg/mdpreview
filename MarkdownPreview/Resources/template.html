@@ -1671,6 +1671,7 @@
         function saveNow() {
             if (_conflicts.length) return;
             flushActive();
+            cleanupAbandonedTransients(); // after the loop — never inside it
             var md = currentMarkdown();
             // No user edits and nothing folded out of the DOM → nothing to
             // persist. Posting anyway would rewrite identical bytes and churn
@@ -1954,12 +1955,14 @@
         }
 
         // A transient empty paragraph is caret scaffolding, not content: it
-        // holds zero source bytes, so once the caret moves on it is a ghost —
-        // visible on screen (a cut paragraph left an empty line behind) but
-        // absent from the file, silently evaporating on the next full
-        // re-render. Drop abandoned ones the moment the caret settles in a
-        // DIFFERENT block; a caret merely lost (blur, mid-update) keeps them,
-        // so returning focus finds the line still there.
+        // holds zero source bytes, so once abandoned it is a ghost — visible
+        // on screen (a cut paragraph left an empty line behind) but absent
+        // from the file, silently evaporating on the next full re-render.
+        // Cleanup runs from the SAVE path — i.e., after an edit somewhere
+        // else — never on mere navigation: arrowing away from a freshly
+        // opened line and coming back must find it still there (an earlier
+        // selectionchange-based cleanup deleted the line the instant a
+        // caret hop left it, 2026-08-19 02:05).
         function cleanupAbandonedTransients() {
             if (_currentMode !== 'reading' || _conflicts.length || _crossMode || _drag) return;
             if (!_segments.some(function (s) { return s.transient; })) return;
@@ -1993,7 +1996,6 @@
             else if (caret != null) restoreGlobalCaret(caret);
         }
         function onSelectionChange() {
-            cleanupAbandonedTransients();
             if (!_crossMode || _drag) return;
             var sel = window.getSelection();
             if (!sel.rangeCount) return; // transient no-range state mid-update

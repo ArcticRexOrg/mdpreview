@@ -1143,11 +1143,15 @@ test('an abandoned transient (cut-out paragraph) is removed when the caret moves
   dispatchInput(t, 'deleteByCut');
   t.win.saveNow();
   assert.ok(t.win._segments.some(s => s.transient), 'emptied block held as transient');
-  // caret moves to para three
+  // caret moves to para three and an edit happens there — the save sweeps
   caret(t.win, { text: 'para three', at: 3 });
-  t.doc.dispatchEvent(new t.win.Event('selectionchange'));
+  t.doc.querySelector('#content [data-seg="4"], #content [data-seg]:last-child');
+  const n3 = [...t.doc.querySelectorAll('#content p')].map(p => p.firstChild)
+    .find(n => n && /para three/.test(n.textContent));
+  n3.textContent = 'para threeX';
+  t.win.saveNow();
   assert.ok(!t.win._segments.some(s => s.transient), 'ghost removed');
-  assert.equal(t.md(), 'para one\n\npara three\n');
+  assert.equal(t.md(), 'para one\n\npara threeX\n');
   const sel = t.win.getSelection();
   assert.ok(/para three/.test(sel.anchorNode.textContent), 'caret survives the cleanup');
 });
@@ -1156,8 +1160,18 @@ test('the transient under the caret is never cleaned up', async () => {
   const t = await setup('alpha one\n');
   caret(t.win, { text: 'alpha one', at: 9 });
   beforeInput(t.win, 'insertParagraph'); // transient below, caret in it
-  t.doc.dispatchEvent(new t.win.Event('selectionchange'));
+  t.win.saveNow();
   assert.ok(t.win._segments.some(s => s.transient), 'caret-holding transient survives');
+});
+
+test('navigating away from a fresh empty line and back keeps it', async () => {
+  const t = await setup('alpha one\n\nbeta two\n');
+  caret(t.win, { text: 'alpha one', at: 9 });
+  beforeInput(t.win, 'insertParagraph');   // open a line below alpha
+  assert.ok(t.win._segments.some(s => s.transient));
+  caret(t.win, { text: 'beta two', at: 0 }); // arrow away (no edit)
+  t.doc.dispatchEvent(new t.win.Event('selectionchange'));
+  assert.ok(t.win._segments.some(s => s.transient), 'no edit — the line waits');
 });
 
 // An item opening with emphasis maps display offset 0 INSIDE the delimiters
