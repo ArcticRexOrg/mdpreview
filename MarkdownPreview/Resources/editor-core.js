@@ -2227,10 +2227,34 @@
   // whitespace inside them is visible content with a spelling. Descendants
   // are processed before ancestors so whitespace bubbles the whole way out
   // (`<strong><em>a </em></strong>` → `<strong><em>a</em></strong> `).
+  //
+  // Directly adjacent identical emphasis siblings are the other unspellable
+  // shape from the same family: a delete spanning two bold runs can leave
+  // <strong>a</strong><strong>b</strong>, whose only printable reading is one
+  // run, so the fingerprint merges them. Merging runs first — before the edge
+  // hoist — so whitespace that becomes interior to the merged run stays put
+  // (`<strong>a </strong><strong>b</strong>` is `**a b**`, not `**a** **b**`).
+  // Siblings separated by anything visible — a space text node, a hard <br> —
+  // are two runs with a spelling of their own and are never merged.
   function hoistEmphasisEdgeWs(root) {
     var els = root.querySelectorAll ? root.querySelectorAll('em,strong,del') : [];
-    for (var i = els.length - 1; i >= 0; i--) {
-      var e = els[i], p = e.parentNode, n, m;
+    var i, e, n, m;
+    // Merge pass in document order: a merge that turns two descendants into
+    // siblings is finished when the walk reaches them.
+    for (i = 0; i < els.length; i++) {
+      e = els[i];
+      if (!e.parentNode) continue; // consumed by an earlier merge
+      for (;;) {
+        n = e.nextSibling;
+        while (n && ((n.nodeType === 3 && n.textContent === '') ||
+                     (n.nodeType === 1 && n.tagName.toUpperCase() !== 'BR' && !subtreeVisible(n)))) n = n.nextSibling;
+        if (!n || n.nodeType !== 1 || n.tagName !== e.tagName) break;
+        while (n.firstChild) e.appendChild(n.firstChild);
+        n.parentNode.removeChild(n);
+      }
+    }
+    for (i = els.length - 1; i >= 0; i--) {
+      var p; e = els[i]; p = e.parentNode;
       if (!p) continue;
       while ((n = e.firstChild) && n.nodeType === 3 && (m = /^\s+/.exec(n.textContent))) {
         if (m[0] === n.textContent) { p.insertBefore(n, e); continue; }

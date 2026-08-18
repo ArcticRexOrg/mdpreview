@@ -319,3 +319,35 @@ test('deleting the head of a strong run strands its space inside the tag', () =>
   assert.ok(r && r.changed, 'edit must fold into source, not revert');
   assert.ok(r.raw.includes('**request is bold**'), r.raw);
 });
+
+// A delete spanning two bold runs can leave directly adjacent sibling
+// <strong>s — a shape with no markdown spelling; its only printable reading
+// is one run, and the fingerprint must agree or the edit reverts.
+test('delete spanning two bold runs leaves adjacent strongs, folds to one run', () => {
+  const t = renderBlock('**alpha** and **beta** tail\n');
+  const p = t.el.querySelector('p');
+  p.removeChild(t.el.querySelectorAll('strong')[0].nextSibling); // " and "
+  const r = core.reconcileDomEdit(t.el, t.token, marked);
+  assert.ok(r && r.changed, 'edit must fold into source, not revert');
+  assert.ok(r.raw.includes('**alphabeta**'), r.raw);
+});
+
+// Trailing space inside the first of the merged runs becomes interior
+// whitespace of the merged run — `**a b**`, never hoisted out between them.
+test('merge across adjacent strongs keeps a stranded space interior', () => {
+  const t = renderBlock('**alpha** and **beta** tail\n');
+  const strongs = t.el.querySelectorAll('strong');
+  strongs[0].firstChild.textContent = 'alpha ';
+  t.el.querySelector('p').removeChild(strongs[0].nextSibling); // " and "
+  const r = core.reconcileDomEdit(t.el, t.token, marked);
+  assert.ok(r && r.changed, 'edit must fold into source, not revert');
+  assert.ok(r.raw.includes('**alpha beta**'), r.raw);
+});
+
+// Two bold runs separated by a real space are two runs with their own
+// spelling — the fingerprint must never merge across visible content.
+test('bold runs separated by a visible space are not merged', () => {
+  const t = renderBlock('**alpha** **beta** tail\n');
+  const r = core.reconcileDomEdit(t.el, t.token, marked);
+  assert.ok(r && !r.changed, 'untouched block must read as unchanged');
+});
