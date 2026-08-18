@@ -1812,7 +1812,12 @@
     var loc = blockAtOffset(blocks, offset);
     var b = blocks[loc.i];
     if (!b || b.kind !== 'listItem') return { md: listMd, caret: offset };
-    if (offset > loc.start + blockFragStart(b)) return { md: listMd, caret: offset }; // not at item start
+    // "At the item's start" means zero display chars before the caret — not
+    // a raw-offset comparison against the marker's width: an item opening
+    // with emphasis maps display offset 0 INSIDE the delimiters ("- **C…" →
+    // source offset 4), which a fragStart comparison misreads as mid-item,
+    // making Backspace at such an item's start a silent no-op.
+    if (blockCharAt(b, offset - loc.start) > 0) return { md: listMd, caret: offset }; // not at item start
     if (loc.i === 0) {
       var out = blocks.slice();
       out[0] = {

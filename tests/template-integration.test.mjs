@@ -1153,3 +1153,22 @@ test('the transient under the caret is never cleaned up', async () => {
   t.doc.dispatchEvent(new t.win.Event('selectionchange'));
   assert.ok(t.win._segments.some(s => s.transient), 'caret-holding transient survives');
 });
+
+// An item opening with emphasis maps display offset 0 INSIDE the delimiters
+// ("- **C…" → source offset 4); the item-start check compared raw offsets
+// against the marker width, so Backspace at such an item's start was a
+// silent no-op — repeatedly, as the editor.log showed (2026-08-19 01:31).
+test('Backspace at the start of a bold-leading first item outdents it', async () => {
+  const t = await setup('- **Credibility:** your customers\n- plain item\n');
+  caret(t.win, { text: 'Credibility', at: 0 });
+  const ev = pressKey(t.win, 'Backspace');
+  assert.ok(ev.defaultPrevented);
+  assert.equal(t.md(), '**Credibility:** your customers\n\n- plain item\n');
+});
+
+test('Backspace at the start of a bold-leading later item merges it up', async () => {
+  const t = await setup('- plain\n- **bold** second\n');
+  caret(t.win, { text: 'bold', at: 0 });
+  pressKey(t.win, 'Backspace');
+  assert.equal(t.md(), '- plain**bold** second\n');
+});
