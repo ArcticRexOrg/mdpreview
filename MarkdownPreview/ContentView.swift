@@ -131,6 +131,15 @@ final class AppState: ObservableObject {
     func saveEditedContent(_ md: String) {
         guard let url = selectedFile else { return }
         lastSavedFromEditor = md
+        // Keep the SwiftUI source of truth at the editor's state: leaving it
+        // at the load-time snapshot meant any later updateNSView pass (a
+        // theme change, an external diskChangeTrigger) re-rendered the STALE
+        // snapshot over the live document — wiping in-flight typing and
+        // resetting the dirty flag, so the following disk merge ran as
+        // "idle" and took the disk wholesale. The coordinator's own echo
+        // guard (lastRenderedContent, already advanced by documentEdited)
+        // makes this assignment render-neutral.
+        markdownContent = md
         try? md.write(to: url, atomically: true, encoding: .utf8)
     }
 }
