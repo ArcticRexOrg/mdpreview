@@ -173,6 +173,11 @@
         #content .seg { outline: none; }
         #content .seg[contenteditable="true"]:focus { outline: none; }
 
+        /* Links in editable blocks take the caret on plain click and open on
+           Cmd+click; while Cmd is held, show the pointer so the link reads as
+           clickable. (Non-editable contexts keep the pointer full-time.) */
+        body.meta-held [contenteditable="true"] a { cursor: pointer; }
+
         /* A block demoted to read-only (its display↔source map can't be
            trusted) is indistinguishable from an editable one until a click
            goes dead. Reveal it on hover: a faint dashed outline plus a small
@@ -1577,6 +1582,42 @@
             document.addEventListener('mouseup', guarded('mouseup', onMouseUp));
             _listenersBound = true;
         }
+
+        // Links. Two defaults are wrong here: contenteditable swallows link
+        // clicks (the caret wins, so links look dead), and outside editable
+        // content a followed link replaces the webview's document with no way
+        // back. So every link open is intercepted and handed to Swift, which
+        // gives it to the system. Plain click opens a link wherever there is
+        // no caret to place (read-only blocks, document mode); inside an
+        // editable block the caret keeps the plain click and Cmd+click opens.
+        function onLinkClick(e) {
+            if (e.button !== 0) return;
+            var t = e.target && e.target.closest ? e.target : (e.target && e.target.parentElement);
+            var a = t && t.closest ? t.closest('a[href]') : null;
+            if (!a) return;
+            if (a.closest('[contenteditable="true"]') && !e.metaKey) return; // caret placement wins
+            e.preventDefault();
+            e.stopPropagation();
+            var href = a.getAttribute('href') || '';
+            if (href.charAt(0) === '#') {
+                var anchor = document.getElementById(decodeURIComponent(href.slice(1)));
+                if (anchor) anchor.scrollIntoView();
+                return;
+            }
+            elog('openLink ' + a.href);
+            if (window.webkit && window.webkit.messageHandlers.openLink) {
+                window.webkit.messageHandlers.openLink.postMessage(a.href);
+            }
+        }
+        document.addEventListener('click', guarded('linkclick', onLinkClick), true);
+
+        // The Cmd-held pointer cue for links in editable blocks (CSS above).
+        function setMetaHeld(on) {
+            if (document.body) document.body.classList.toggle('meta-held', on);
+        }
+        document.addEventListener('keydown', function (e) { if (e.key === 'Meta') setMetaHeld(true); }, true);
+        document.addEventListener('keyup', function (e) { if (e.key === 'Meta') setMetaHeld(false); }, true);
+        window.addEventListener('blur', function () { setMetaHeld(false); });
 
         // Called from Swift when the file changed on disk under the editor.
         function applyDiskChange(diskMd) {

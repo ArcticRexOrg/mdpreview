@@ -32,6 +32,7 @@ struct MarkdownWebView: NSViewRepresentable {
         config.userContentController.add(context.coordinator, name: "consoleLog")
         config.userContentController.add(context.coordinator, name: "documentEdited")
         config.userContentController.add(context.coordinator, name: "editorLog")
+        config.userContentController.add(context.coordinator, name: "openLink")
         let consoleScript = WKUserScript(
             source: "var _origLog = console.log; console.log = function() { var msg = Array.from(arguments).map(String).join(' '); _origLog.apply(console, arguments); window.webkit.messageHandlers.consoleLog.postMessage(msg); };",
             injectionTime: .atDocumentStart,
@@ -184,6 +185,12 @@ struct MarkdownWebView: NSViewRepresentable {
                     // and move the cursor.
                     lastRenderedContent = md
                     onDocumentEdited?(md)
+                }
+                return
+            }
+            if message.name == "openLink" {
+                if let href = message.body as? String, let url = URL(string: href) {
+                    openExternally(url)
                 }
                 return
             }
@@ -404,6 +411,34 @@ struct MarkdownWebView: NSViewRepresentable {
             } else {
                 pendingContent = content
             }
+        }
+
+        // Every link open goes to the system, never the webview: the JS layer
+        // intercepts clicks (it is the only path that can offer Cmd+click
+        // inside editable blocks, where no navigation ever fires) and posts
+        // openLink; this policy check is the safety net for any link that
+        // still starts a navigation, which would otherwise replace the
+        // rendered document with no way back.
+        func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
+                     decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+            if navigationAction.navigationType == .linkActivated, let url = navigationAction.request.url {
+                // Same-document fragment jumps stay in the webview.
+                let strip = { (u: URL) in u.absoluteString.split(separator: "#", maxSplits: 1)[0] }
+                if let current = webView.url, strip(url) == strip(current) {
+                    decisionHandler(.allow)
+                    return
+                }
+                decisionHandler(.cancel)
+                openExternally(url)
+                return
+            }
+            decisionHandler(.allow)
+        }
+
+        private func openExternally(_ url: URL) {
+            guard let scheme = url.scheme?.lowercased(),
+                  ["http", "https", "mailto", "file"].contains(scheme) else { return }
+            NSWorkspace.shared.open(url)
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {

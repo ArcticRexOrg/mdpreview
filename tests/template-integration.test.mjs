@@ -33,17 +33,19 @@ async function setup(md) {
   win.scrollTo = () => {};
   let saved = null;
   const log = [];
+  const opened = [];
   win.webkit = { messageHandlers: {
     documentEdited: { postMessage(m) { saved = m; } },
     paginationDone: { postMessage() {} },
     editorLog: { postMessage(m) { log.push(m); } },
+    openLink: { postMessage(m) { opened.push(m); } },
   } };
   win.eval(scriptSrc);
   win._rawMarkdown = md;
   win._baseMarkdown = md;
   await win.renderReading(); // await so editing listeners (bound after the await) are live
   return {
-    win, doc: win.document, log,
+    win, doc: win.document, log, opened,
     seg: () => win.document.querySelector('#content [data-seg]'),
     md: () => win.currentMarkdown(),
     saved: () => saved,
@@ -710,4 +712,59 @@ test('demoted blocks are marked seg-readonly, inherent ones are not', async () =
   assert.ok(!code.classList.contains('seg-readonly'), 'code fence is not marked');
   assert.ok(editable.length >= 1, 'plain paragraph stays editable');
   assert.ok(demoted.length >= 1, `expected a demoted block in this doc, got ${segs.map((d) => d.getAttribute('contenteditable'))}`);
+});
+
+// Links: contenteditable swallows link clicks and a followed link would
+// replace the webview's document, so the click handler routes opens to Swift.
+// Plain click opens where there is no caret to place; in an editable block
+// the caret keeps the plain click and Cmd+click opens.
+function clickOn(win, el, opts = {}) {
+  const ev = new win.MouseEvent('click', { bubbles: true, cancelable: true, button: 0, ...opts });
+  el.dispatchEvent(ev);
+  return ev;
+}
+
+test('plain click on a link in an editable block places the caret, not the browser', async () => {
+  const t = await setup('see [the docs](https://example.com/docs) here\n');
+  const a = t.doc.querySelector('a');
+  // In WebKit, contenteditable itself suppresses the navigation; jsdom would
+  // actually navigate, so absorb the default at the end of the bubble phase
+  // and record whether our handler had (wrongly) prevented it before then.
+  let prevented = null;
+  t.doc.addEventListener('click', (e) => { prevented = e.defaultPrevented; e.preventDefault(); });
+  clickOn(t.win, a);
+  assert.equal(t.opened.length, 0, 'no open posted');
+  assert.equal(prevented, false, 'default (caret placement) must survive');
+});
+
+test('cmd+click on a link in an editable block opens it via Swift', async () => {
+  const t = await setup('see [the docs](https://example.com/docs) here\n');
+  const a = t.doc.querySelector('a');
+  const ev = clickOn(t.win, a, { metaKey: true });
+  assert.deepEqual(t.opened, ['https://example.com/docs']);
+  assert.ok(ev.defaultPrevented, 'navigation must be suppressed');
+});
+
+test('plain click on a link in a read-only block opens it via Swift', async () => {
+  // A raw HTML block renders read-only (contenteditable=false).
+  const t = await setup('<div>see <a href="https://example.com/x">x</a></div>\n');
+  const a = t.doc.querySelector('#content a');
+  assert.ok(a, 'link rendered');
+  assert.equal(a.closest('[contenteditable="true"]'), null, 'block must be read-only');
+  const ev = clickOn(t.win, a);
+  assert.deepEqual(t.opened, ['https://example.com/x']);
+  assert.ok(ev.defaultPrevented, 'navigation must be suppressed');
+});
+
+test('click on a fragment link scrolls in place, never leaves the page', async () => {
+  const t = await setup('# Target\n\nsee [above](#target)\n');
+  const a = t.doc.querySelector('a[href="#target"]');
+  assert.ok(a, 'fragment link rendered');
+  let scrolled = false;
+  const h = t.doc.getElementById('target');
+  if (h) h.scrollIntoView = () => { scrolled = true; };
+  const ev = clickOn(t.win, a, { metaKey: true });
+  assert.equal(t.opened.length, 0, 'fragment must not open externally');
+  assert.ok(ev.defaultPrevented, 'handled in page');
+  if (h) assert.ok(scrolled, 'scrolled to the anchor');
 });
