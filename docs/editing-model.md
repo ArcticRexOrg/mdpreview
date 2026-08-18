@@ -74,3 +74,16 @@ functions on the model and therefore *are* their specs.
   test with remnants real WebKit gestures leave behind (hard-coded in
   dom-reconcile.test.mjs) — jsdom has no editing engine, so hand-built
   mutations are cleaner than reality.
+  Bitten again 2026-08-18: a selection delete that empties an inline element
+  leaves an *empty text node* inside it, and two pieces of edge logic that
+  indexed nodes positionally (edgeItems' items[0], the emphasis-edge hoist's
+  firstChild/lastChild) let that husk shield real edge whitespace — every
+  candidate failed the display or canon check and the edit reverted. The
+  corollary to "judge nodes by what they render" is **judge edges by
+  content, never by node position**: any walk that takes a first/last/nth
+  node must skip nodes that show nothing. Debugging trap that made this one
+  cost three rounds: empty text nodes are invisible to innerHTML
+  serialization, so the logged DOM fixture reconciled while the live DOM
+  refused. If a FAILED line ever reconciles cleanly from its own logged
+  fixture, suspect husks first — and the refusal trace (`why=[…]` on the
+  FAILED line, EditorCore.reconcileTrace) now names the stage that refused.

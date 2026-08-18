@@ -2474,6 +2474,35 @@
    * line of defense: a reconciled source must re-lex as one block rendering
    * exactly the DOM's text and canonical structure, or the edit is refused.
    */
+  // innerHTML for the editing transcript. Plain innerHTML hides exactly the
+  // states that cause refusals: empty text nodes (deletion husks) vanish and
+  // a non-breaking space prints as an ordinary space — so a logged fixture
+  // could reconcile while the live DOM refused. Husks appear as <!--husk-->
+  // and nbsp as &nbsp;, making the dump a faithful, paste-ready fixture.
+  function debugSerialize(el) {
+    var VOID = { BR: 1, HR: 1, IMG: 1, INPUT: 1 };
+    var out = '';
+    function esc(s) {
+      return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\u00A0/g, '&nbsp;');
+    }
+    (function walk(node) {
+      for (var n = node.firstChild; n; n = n.nextSibling) {
+        if (n.nodeType === 3) { out += n.textContent === '' ? '<!--husk-->' : esc(n.textContent); continue; }
+        if (n.nodeType !== 1) continue;
+        var tag = n.tagName.toLowerCase();
+        out += '<' + tag;
+        for (var a = 0; a < n.attributes.length; a++) {
+          out += ' ' + n.attributes[a].name + '="' + esc(n.attributes[a].value).replace(/"/g, '&quot;') + '"';
+        }
+        out += '>';
+        if (VOID[n.tagName.toUpperCase()]) continue;
+        walk(n);
+        out += '</' + tag + '>';
+      }
+    })(el);
+    return out;
+  }
+
   // Why the last reconcileDomEdit refused, stage by stage — a refusal reverts
   // the user's edit, so the FAILED log line must name the stage and candidate
   // that lost it, or field failures are unreproducible guesswork.
@@ -2599,6 +2628,7 @@
     sourceOffsetToDom: sourceOffsetToDom,
     reconcileDomEdit: reconcileDomEdit,
     reconcileTrace: reconcileTrace,
+    debugSerialize: debugSerialize,
     displayTextOf: displayTextOf,
     renderedDisplayOf: renderedDisplayOf,
     renderedCanonicalOf: renderedCanonicalOf,

@@ -390,3 +390,16 @@ test('a deletion husk inside a strong does not block the edge-whitespace hoist',
   // both spaces around the deleted "b *i*" survive, hoisted out of the run
   assert.equal(r.raw.replace(/\n+$/, ''), 'a  **c** d');
 });
+
+// The transcript's html dump must show what innerHTML hides — deletion husks
+// and non-breaking spaces — or a logged fixture can reconcile while the live
+// DOM refuses (exactly how the 2026-08-18 husk revert resisted reproduction).
+test('debugSerialize makes husks and nbsp visible', () => {
+  const t = renderBlock('a **b** c\n');
+  const strong = t.el.querySelector('strong');
+  strong.firstChild.textContent = '';
+  strong.parentNode.lastChild.textContent = ' c ';
+  const s = core.debugSerialize(t.el);
+  assert.ok(s.includes('<strong><!--husk--></strong>'), s);
+  assert.ok(s.includes('&nbsp;'), s);
+});

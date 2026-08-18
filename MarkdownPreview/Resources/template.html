@@ -762,7 +762,7 @@
                 // the innerHTML is a paste-ready fixture for dom-reconcile tests.
                 elog('flush seg=' + i + ' FAILED — DOM edit not reconcilable, why=[' +
                      (EditorCore.reconcileTrace ? EditorCore.reconcileTrace() : '') +
-                     '] raw=' + exc(seg.raw) + ' dom=' + exc(div.textContent) + ' html=' + exc(div.innerHTML, 2000));
+                     '] raw=' + exc(seg.raw) + ' dom=' + exc(div.textContent) + ' html=' + exc(EditorCore.debugSerialize(div), 2000));
                 return false;
             }
             if (!rec.changed) {
