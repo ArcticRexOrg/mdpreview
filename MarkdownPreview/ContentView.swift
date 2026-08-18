@@ -128,8 +128,23 @@ final class AppState: ObservableObject {
 
     /// Persist an edit made in the rendered view. Writing is what produces the
     /// watcher echo that `onExternalChange` then ignores via `lastSavedFromEditor`.
-    func saveEditedContent(_ md: String) {
-        guard let url = selectedFile else { return }
+    ///
+    /// Returns nil when the write landed. When the disk holds a change the
+    /// watcher has not yet delivered (its callback lags the actual write),
+    /// writing blind would clobber the other writer — and the echo
+    /// suppression would then swallow their change without a trace. Decline
+    /// instead and return the disk content; the caller hands it to the
+    /// editor's 3-way merge, whose result comes back as a fresh save. The
+    /// read-compare-write here still has a window, but microseconds instead
+    /// of the watcher's latency.
+    func saveEditedContent(_ md: String) -> String? {
+        guard let url = selectedFile else { return nil }
+        if let disk = try? String(contentsOf: url, encoding: .utf8),
+           disk != lastSavedFromEditor, disk != md {
+            lastSavedFromEditor = disk
+            markdownContent = md
+            return disk
+        }
         lastSavedFromEditor = md
         // Keep the SwiftUI source of truth at the editor's state: leaving it
         // at the load-time snapshot meant any later updateNSView pass (a
@@ -141,6 +156,7 @@ final class AppState: ObservableObject {
         // makes this assignment render-neutral.
         markdownContent = md
         try? md.write(to: url, atomically: true, encoding: .utf8)
+        return nil
     }
 }
 

@@ -19,7 +19,7 @@ struct MarkdownWebView: NSViewRepresentable {
     var baseURL: URL?
     var diskChangeContent: String = ""
     var diskChangeTrigger: Int = 0
-    var onEdit: (String) -> Void = { _ in }
+    var onEdit: (String) -> String? = { _ in nil }
 
     func makeCoordinator() -> Coordinator {
         Coordinator()
@@ -139,7 +139,7 @@ struct MarkdownWebView: NSViewRepresentable {
         var lastBaseURL: URL?
         var currentViewMode: ViewMode = .reading
         var lastDiskChangeTrigger: Int = 0
-        var onDocumentEdited: ((String) -> Void)?
+        var onDocumentEdited: ((String) -> String?)?
 
         // Editing transcript: every editing event/outcome the JS editor logs,
         // appended to ~/Library/Logs/MarkdownPreview/editor.log so a bug report
@@ -184,7 +184,17 @@ struct MarkdownWebView: NSViewRepresentable {
                     // rendered so the watcher echo of our own write can't re-render
                     // and move the cursor.
                     lastRenderedContent = md
-                    onDocumentEdited?(md)
+                    // Report the write's fate back to the editor: a landed
+                    // save retires its provisional baseline; a declined one
+                    // (unseen disk change underneath) hands the disk content
+                    // to the 3-way merge with the honest baseline restored.
+                    if let disk = onDocumentEdited?(md) ?? nil,
+                       let data = try? JSONEncoder().encode(disk),
+                       let json = String(data: data, encoding: .utf8) {
+                        webView?.evaluateJavaScript("saveDeclined(\(json))", completionHandler: nil)
+                    } else {
+                        webView?.evaluateJavaScript("saveLanded()", completionHandler: nil)
+                    }
                 }
                 return
             }

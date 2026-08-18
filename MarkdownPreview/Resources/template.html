@@ -331,6 +331,7 @@
         // --- In-place editing state ---
         var _segments = [];          // EditorCore.segment() output; raw join === file
         var _baseMarkdown = '';      // last version common to disk + view (for 3-way merge)
+        var _pendingSaveBase = null; // base before the last posted save, until Swift confirms the write landed
         var _saveTimer = null;       // debounce for autosave
         var _dirty = false;          // user edits since the last disk sync — the ONLY licence to write the file
         var _conflicts = [];         // open blocking conflicts (suspends autosave)
@@ -1517,12 +1518,33 @@
             // persist. Posting anyway would rewrite identical bytes and churn
             // the file's mtime under every watcher pointed at it.
             if (!_dirty && md === _baseMarkdown) return;
+            // The base advance below is optimistic — the posted bytes become
+            // "disk-common" only if Swift's write lands. Keep the honest base
+            // until saveLanded()/saveDeclined() reports back, so a declined
+            // write can still merge against the truth.
+            if (_pendingSaveBase == null) _pendingSaveBase = _baseMarkdown;
             _rawMarkdown = md; _baseMarkdown = md;
             _dirty = false;
             elog('save ' + md.length + ' bytes');
             if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.documentEdited) {
                 window.webkit.messageHandlers.documentEdited.postMessage(md);
             }
+        }
+        // Swift confirmed the last posted save reached the file.
+        function saveLanded() { _pendingSaveBase = null; }
+        // Swift declined the last posted save: the disk holds a change the
+        // watcher had not yet delivered, and writing blind would have
+        // clobbered the other writer (with the echo suppression then
+        // swallowing their change without a trace). The optimistic base
+        // advance in saveNow lied — the posted bytes never became disk-common
+        // — so restore the pre-save base and route the disk content through
+        // the ordinary 3-way merge; the merged result (or the user's conflict
+        // resolution) comes back as a fresh save.
+        function saveDeclined(diskMd) {
+            elog('save DECLINED — disk changed underneath, merging instead');
+            if (_pendingSaveBase != null) { _baseMarkdown = _pendingSaveBase; _pendingSaveBase = null; }
+            if (currentMarkdown() !== _baseMarkdown) _dirty = true;
+            applyDiskChange(diskMd);
         }
         function onBlur() { setTimeout(function(){ if (!_conflicts.length) saveNow(); }, 0); }
 

@@ -965,3 +965,35 @@ test('deleting a whole bold run in a cell keeps the caret in that cell', async (
   const cell2 = a2.nodeType === 1 ? a2.closest && a2.closest('td') : a2.parentElement.closest('td');
   assert.ok(cell2 && /tail/.test(cell2.textContent), 'caret survives the refresh in the edited cell');
 });
+
+// The save race: our debounced write can fire after another writer changed
+// the file but before the watcher delivered it. Swift declines such writes
+// and calls saveDeclined(disk); the editor must restore the honest pre-save
+// baseline (saveNow advances it optimistically) and 3-way merge, so both
+// writers' changes survive.
+test('a declined save merges the unseen disk change with the local edit', async () => {
+  const t = await setup('alpha one\n\nbeta two\n');
+  const node = [...t.doc.querySelectorAll('#content p')].map(p => p.firstChild)
+    .find(n => n && /beta two/.test(n.textContent));
+  node.textContent = 'beta twoX';                   // local edit
+  t.win.saveNow();                                  // posts, base optimistically advances
+  assert.equal(t.saved(), 'alpha one\n\nbeta twoX\n');
+  // Meanwhile the other writer changed the FIRST paragraph on disk.
+  t.win.saveDeclined('alpha oneY\n\nbeta two\n');
+  const merged = t.win.currentMarkdown();
+  assert.ok(merged.includes('alpha oneY'), 'disk change survives: ' + merged);
+  assert.ok(merged.includes('beta twoX'), 'local edit survives: ' + merged);
+  t.win.saveNow(); // flush the debounced persist of the merge
+  assert.equal(t.saved(), merged, 'merged result posted as a fresh save');
+});
+
+test('saveLanded retires the provisional baseline', async () => {
+  const t = await setup('alpha one\n');
+  t.doc.querySelector('#content p').firstChild.textContent = 'alpha oneZ';
+  t.win.saveNow();
+  t.win.saveLanded();
+  // A later external change on an idle editor takes disk verbatim — the
+  // retired baseline must not resurrect the old save as a "local edit".
+  t.win.applyDiskChange('fresh disk\n');
+  assert.equal(t.win.currentMarkdown(), 'fresh disk\n');
+});
