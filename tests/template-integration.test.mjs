@@ -1126,3 +1126,30 @@ test('typing dashes on a fresh line reaches an hr; dash-space still bullets', as
   assert.ok(t2.doc.querySelector('#content li'), 'dash-space starts a list');
   assert.ok(!t2.md().includes('\\-'), 'escape gone: ' + JSON.stringify(t2.md()));
 });
+
+// A transient holds no bytes: once the caret settles in a different block it
+// is a ghost — a cut paragraph left a visible empty line behind that
+// silently evaporated on the next full re-render. Abandonment cleans it up.
+test('an abandoned transient (cut-out paragraph) is removed when the caret moves on', async () => {
+  const t = await setup('para one\n\npara two\n\npara three\n');
+  // cut para two: select its whole text, deleteByCut
+  rangeSelect(t, 'para two', 0, 'para two', 8);
+  dispatchInput(t, 'deleteByCut');
+  t.win.saveNow();
+  assert.ok(t.win._segments.some(s => s.transient), 'emptied block held as transient');
+  // caret moves to para three
+  caret(t.win, { text: 'para three', at: 3 });
+  t.doc.dispatchEvent(new t.win.Event('selectionchange'));
+  assert.ok(!t.win._segments.some(s => s.transient), 'ghost removed');
+  assert.equal(t.md(), 'para one\n\npara three\n');
+  const sel = t.win.getSelection();
+  assert.ok(/para three/.test(sel.anchorNode.textContent), 'caret survives the cleanup');
+});
+
+test('the transient under the caret is never cleaned up', async () => {
+  const t = await setup('alpha one\n');
+  caret(t.win, { text: 'alpha one', at: 9 });
+  beforeInput(t.win, 'insertParagraph'); // transient below, caret in it
+  t.doc.dispatchEvent(new t.win.Event('selectionchange'));
+  assert.ok(t.win._segments.some(s => s.transient), 'caret-holding transient survives');
+});

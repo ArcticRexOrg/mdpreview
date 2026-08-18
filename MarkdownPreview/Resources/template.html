@@ -1895,7 +1895,47 @@
             }
         }
 
+        // A transient empty paragraph is caret scaffolding, not content: it
+        // holds zero source bytes, so once the caret moves on it is a ghost —
+        // visible on screen (a cut paragraph left an empty line behind) but
+        // absent from the file, silently evaporating on the next full
+        // re-render. Drop abandoned ones the moment the caret settles in a
+        // DIFFERENT block; a caret merely lost (blur, mid-update) keeps them,
+        // so returning focus finds the line still there.
+        function cleanupAbandonedTransients() {
+            if (_currentMode !== 'reading' || _conflicts.length || _crossMode || _drag) return;
+            if (!_segments.some(function (s) { return s.transient; })) return;
+            var sel = window.getSelection();
+            if (!sel.rangeCount || !sel.isCollapsed) return;
+            var anchorDiv = segDivFor(sel.anchorNode);
+            if (!anchorDiv) return;
+            var aseg = _segments[segIndexOf(anchorDiv)];
+            if (!aseg) return;
+            // Capture the caret BEFORE mutating _segments — the mapping runs
+            // through the live DOM's data-seg indices.
+            var caret = aseg.transient ? null : currentGlobalCaret();
+            var removed = false;
+            for (var i = _segments.length - 1; i >= 0; i--) {
+                if (!_segments[i].transient || _segments[i] === aseg) continue;
+                elog('transient seg=' + i + ' abandoned — removed');
+                _segments.splice(i, 1);
+                // The ghost sat between two separators; one blank line is the
+                // intuitive residue of a removed paragraph, not two.
+                if (i > 0 && i < _segments.length &&
+                    _segments[i - 1].type === 'space' && _segments[i].type === 'space') {
+                    _segments[i - 1] = { index: 0, type: 'space', raw: '\n\n', token: null, editable: false };
+                    _segments.splice(i, 1);
+                }
+                removed = true;
+            }
+            if (!removed) return;
+            _rawMarkdown = currentMarkdown();
+            renderReading(true);
+            if (aseg.transient) placeCaretInTransient(_segments.indexOf(aseg));
+            else if (caret != null) restoreGlobalCaret(caret);
+        }
         function onSelectionChange() {
+            cleanupAbandonedTransients();
             if (!_crossMode || _drag) return;
             var sel = window.getSelection();
             if (!sel.rangeCount) return; // transient no-range state mid-update
