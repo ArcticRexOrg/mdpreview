@@ -1824,7 +1824,12 @@
         kind: 'paragraph', text: b.text, prov: b.prov, raw: null,
         sep: blocks.length > 1 ? '\n\n' : (b.sep != null && b.sep !== '' ? b.sep : '\n'),
       };
-      return { md: printBlocks(out, marked), caret: 0 };
+      // Caret at the paragraph's first display char, via the printer's own
+      // mapping — raw offset 0 sits BEFORE any leading delimiter ("**C…"),
+      // which the DOM mapper reads as the far side of the block's start.
+      var caret0 = { block: 0, ch: 0, offset: -1 };
+      var md0 = printBlocks(out, marked, caret0);
+      return { md: md0, caret: caret0.offset >= 0 ? caret0.offset : 0 };
     }
     var merged = mergeBlocksM(blocks, loc.i);
     if (!merged) return { md: listMd, caret: offset };
@@ -2020,6 +2025,10 @@
   // start-of-item-2 (node "two", 0) apart from end-of-item-1 (node "one", end)
   // — they share a display offset but live in different list elements.
   function locateDisp(nodes, dispPos, preferStart) {
+    // Display offset 0 has no "previous side": with preferStart=false the
+    // scan (dispPos > acc) matches no node and fell through to the LAST
+    // node's end — a caret aimed at the block's start landing at its end.
+    if (dispPos <= 0) preferStart = true;
     var acc = 0;
     for (var i = 0; i < nodes.length; i++) {
       var len = nodes[i].textContent.length, end = acc + len;

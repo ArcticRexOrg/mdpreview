@@ -1164,6 +1164,9 @@ test('Backspace at the start of a bold-leading first item outdents it', async ()
   const ev = pressKey(t.win, 'Backspace');
   assert.ok(ev.defaultPrevented);
   assert.equal(t.md(), '**Credibility:** your customers\n\n- plain item\n');
+  const sel = t.win.getSelection();
+  assert.ok(/Credibility/.test(sel.anchorNode.textContent), 'caret in the new paragraph');
+  assert.equal(sel.anchorOffset, 0, 'at its START, not its end');
 });
 
 test('Backspace at the start of a bold-leading later item merges it up', async () => {
