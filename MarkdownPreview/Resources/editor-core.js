@@ -2463,7 +2463,15 @@
    * line of defense: a reconciled source must re-lex as one block rendering
    * exactly the DOM's text and canonical structure, or the edit is refused.
    */
+  // Why the last reconcileDomEdit refused, stage by stage — a refusal reverts
+  // the user's edit, so the FAILED log line must name the stage and candidate
+  // that lost it, or field failures are unreproducible guesswork.
+  var _reconcileTrace = [];
+  function trace(m) { if (_reconcileTrace.length < 12) _reconcileTrace.push(m); }
+  function reconcileTrace() { return _reconcileTrace.join(' | '); }
+
   function reconcileDomEdit(el, blockToken, marked, base) {
+    _reconcileTrace = [];
     var doc = el.ownerDocument;
     var src = renderedOf(doc, blockToken.raw, marked);
     var oldDisp = src === null ? null : src.disp;
@@ -2490,20 +2498,24 @@
       var wantCanon = canonicalOfEl(readEl, base);
       function same() { return isArtifact ? { changed: false, artifact: true } : { changed: false }; }
       if (oldDisp !== null && wantDisp === oldDisp && src.canon === wantCanon) return same();
-      function accept(cand) {
-        if (cand === null) return null;
+      function accept(cand, label) {
+        if (cand === null) return trace(label + ': no candidate'), null;
         if (cand === blockToken.raw) return same();
-        if (relexMatches(doc, cand, wantDisp, marked) === null) return null;
-        if (renderedCanonicalOf(doc, cand, marked) !== wantCanon) return null;
+        if (relexMatches(doc, cand, wantDisp, marked) === null) {
+          return trace(label + ': relex/display refuses "' + cand.slice(0, 60) + '"'), null;
+        }
+        if (renderedCanonicalOf(doc, cand, marked) !== wantCanon) {
+          return trace(label + ': canon mismatch "' + cand.slice(0, 60) + '"'), null;
+        }
         return { changed: true, raw: cand, empty: wantDisp === '' };
       }
       var oldBlocks = parseBlocks(blockToken.raw, marked);
-      if (!oldBlocks) return null; // block outside the model — refuse, don't guess
+      if (!oldBlocks) return trace('source outside model'), null;
       var newBlocks = readBlocksFromDom(readEl, base);
-      if (!newBlocks) return null; // DOM structure outside the model
+      if (!newBlocks) return trace('DOM outside model'), null;
       var adopted = diffBlocks(oldBlocks, newBlocks);
       var cand = printBlocks(adopted, marked);
-      var r = accept(cand);
+      var r = accept(cand, 'print');
       if (r) return r;
       // Adopted provenance can go stale against a heavily-rearranged DOM;
       // retry once with a fully canonical print before refusing.
@@ -2514,7 +2526,7 @@
         };
       }), marked);
       if (canonical !== cand) {
-        r = accept(canonical);
+        r = accept(canonical, 'canonical');
         if (r) return r;
       }
       // Last resort: keep the source and change as little of it as possible.
@@ -2525,7 +2537,7 @@
       // original bytes preserves everything it did not touch. accept() checks
       // the result as strictly as any other candidate, so an inexact splice is
       // rejected rather than trusted.
-      return accept(spliceCandidate(blockToken, oldDisp, wantDisp));
+      return accept(spliceCandidate(blockToken, oldDisp, wantDisp), 'splice');
     }
 
     // Which reading to believe first depends on the source, not the DOM alone.
@@ -2575,6 +2587,7 @@
     domOffsetToSourceOffset: domOffsetToSourceOffset,
     sourceOffsetToDom: sourceOffsetToDom,
     reconcileDomEdit: reconcileDomEdit,
+    reconcileTrace: reconcileTrace,
     displayTextOf: displayTextOf,
     renderedDisplayOf: renderedDisplayOf,
     renderedCanonicalOf: renderedCanonicalOf,
