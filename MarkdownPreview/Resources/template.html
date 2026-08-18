@@ -937,10 +937,18 @@
             scheduleSave();
         }
 
+        // Source offset of the block's first display character. Not 0 for
+        // blocks with a source prefix — "## Heading" shows its first char at
+        // source offset 3 — so every "is the caret at the block's start"
+        // decision must compare against this, not against zero.
+        function contentStartSrc(div, seg) {
+            return EditorCore.domOffsetToSourceOffset(div, div, 0, seg.token);
+        }
         function atBlockStart(sel, div) {
             if (!sel.isCollapsed) return false;
             var seg = _segments[segIndexOf(div)];
-            return EditorCore.domOffsetToSourceOffset(div, sel.anchorNode, sel.anchorOffset, seg.token) === 0;
+            var local = EditorCore.domOffsetToSourceOffset(div, sel.anchorNode, sel.anchorOffset, seg.token);
+            return local <= contentStartSrc(div, seg);
         }
 
         // A selection spanning two editable blocks (each block is its own
@@ -1594,6 +1602,33 @@
             if (_currentMode !== 'reading' || _conflicts.length) return;
             if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && !e.shiftKey && !e.metaKey && !e.altKey) {
                 if (crossBlockArrow(e.key === 'ArrowUp' ? -1 : 1)) { elog('keydown ' + e.key + ' cross-block hop'); e.preventDefault(); }
+                return;
+            }
+            // Left at a block's start / Right at its end: native movement dies
+            // at the island boundary (same as Up/Down, but by offset, not
+            // geometry) — hop to the adjacent block's near edge.
+            if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && !e.shiftKey && !e.metaKey && !e.altKey) {
+                var asel = window.getSelection();
+                if (!asel.rangeCount || !asel.isCollapsed) return;
+                var adiv = segDivFor(asel.anchorNode);
+                if (!adiv) return;
+                var ai = segIndexOf(adiv), aseg = _segments[ai];
+                if (!aseg) return;
+                var dir = e.key === 'ArrowLeft' ? -1 : 1;
+                if (!aseg.transient) {
+                    if (!aseg.token) return;
+                    var alocal = EditorCore.domOffsetToSourceOffset(adiv, asel.anchorNode, asel.anchorOffset, aseg.token);
+                    // A block's first display char can sit past a source
+                    // prefix ("## "), so the content start is not offset 0.
+                    if (dir < 0 ? alocal > contentStartSrc(adiv, aseg) : alocal < aseg.raw.replace(/\s+$/, '').length) return;
+                }
+                var tdiv2 = EditorCore.adjacentEditableSeg(adiv, dir);
+                if (!tdiv2) return;
+                e.preventDefault();
+                elog('keydown ' + e.key + ' cross-block hop');
+                var ti2 = segIndexOf(tdiv2), tseg2 = _segments[ti2];
+                if (tseg2.transient) { placeCaretInTransient(ti2); return; }
+                setCaretSource(tdiv2, tseg2, dir < 0 ? tseg2.raw.replace(/\s+$/, '').length : contentStartSrc(tdiv2, tseg2));
                 return;
             }
             // Backspace with nothing to delete inside the block's own island

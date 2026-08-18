@@ -1011,3 +1011,43 @@ test('double-Enter mid-list exits cleanly; the intermediate save is unmangled', 
   beforeInput(t.win, 'insertText', 'P');
   assert.equal(t.md(), '- one\n- two\n\nP\n\n- three\n');
 });
+
+// Left at a block's start / Right at its end: native caret movement dies at
+// the contenteditable island boundary — hop to the adjacent block's edge.
+test('ArrowLeft at a heading start hops to the end of the previous paragraph', async () => {
+  const t = await setup('alpha one\n\n## Heading\n');
+  caret(t.win, { text: 'Heading', at: 0 });
+  const ev = pressKey(t.win, 'ArrowLeft');
+  assert.ok(ev.defaultPrevented, 'must hop, not die');
+  const sel = t.win.getSelection();
+  assert.ok(/alpha one/.test(sel.anchorNode.textContent), 'caret in previous block');
+  assert.equal(sel.anchorOffset, 'alpha one'.length, 'at its end');
+});
+
+test('ArrowRight at a paragraph end hops to the start of the next block', async () => {
+  const t = await setup('alpha one\n\n## Heading\n');
+  caret(t.win, { text: 'alpha one', at: 9 });
+  const ev = pressKey(t.win, 'ArrowRight');
+  assert.ok(ev.defaultPrevented, 'must hop, not die');
+  const sel = t.win.getSelection();
+  assert.ok(/Heading/.test(sel.anchorNode.textContent), 'caret in next block');
+  assert.equal(sel.anchorOffset, 0, 'at its start');
+});
+
+test('ArrowLeft mid-block stays native', async () => {
+  const t = await setup('alpha one\n\n## Heading\n');
+  caret(t.win, { text: 'Heading', at: 3 });
+  const ev = pressKey(t.win, 'ArrowLeft');
+  assert.ok(!ev.defaultPrevented, 'mid-block movement is WebKit business');
+});
+
+// atBlockStart's "=== 0" never held for prefixed blocks — a heading's first
+// display char sits at source offset 3 — so Backspace at a heading start was
+// still a dead key while paragraphs merged fine.
+test('keydown Backspace at the start of a heading merges it into the previous', async () => {
+  const t = await setup('alpha one\n\n## Heading\n');
+  caret(t.win, { text: 'Heading', at: 0 });
+  const ev = pressKey(t.win, 'Backspace');
+  assert.ok(ev.defaultPrevented, 'must be handled at keydown');
+  assert.ok(/alpha one.*Heading/s.test(t.md()) && !/##/.test(t.md()), t.md());
+});
