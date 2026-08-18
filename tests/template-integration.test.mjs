@@ -942,3 +942,26 @@ test('Shift+Cmd+H over a select-all shifts every block it touches', async () => 
   assert.ok(ev.defaultPrevented, 'must be handled, not refused');
   assert.equal(t.md(), '# top\n\n###### para one\n');
 });
+
+// Deleting a whole bold run must not park the caret in the deletion husk —
+// WebKit normalizes a husk-caret to the nearest previous position (in a
+// table, the previous cell's tail) and the post-flush refresh then restores
+// the drifted caret there. The caret anchors at the husk's slot instead.
+test('deleting a whole bold run in a cell keeps the caret in that cell', async () => {
+  const t = await setup('| a | b |\n|---|---|\n| left cell | **X** — tail |\n');
+  const strong = t.doc.querySelector('strong');
+  const sel = t.win.getSelection(), r = t.doc.createRange();
+  r.selectNodeContents(strong.firstChild);
+  sel.removeAllRanges(); sel.addRange(r);
+  const ev = dispatchInput(t, 'deleteContentBackward');
+  assert.ok(ev.defaultPrevented);
+  const anchor = t.win.getSelection().anchorNode;
+  assert.ok(!(anchor.nodeType === 3 && anchor.textContent === ''), 'caret must not sit in the husk');
+  const cell = anchor.nodeType === 1 ? anchor.closest('td') : anchor.parentElement.closest('td');
+  assert.ok(cell && /tail/.test(cell.textContent), 'caret stays in the edited cell');
+  t.win.saveNow();
+  assert.ok(t.md().includes('| — tail |'), t.md());
+  const a2 = t.win.getSelection().anchorNode;
+  const cell2 = a2.nodeType === 1 ? a2.closest && a2.closest('td') : a2.parentElement.closest('td');
+  assert.ok(cell2 && /tail/.test(cell2.textContent), 'caret survives the refresh in the edited cell');
+});

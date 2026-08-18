@@ -1041,7 +1041,20 @@
                 if (first) { nr.setStartBefore(first); }
                 else { nr.selectNodeContents(ba); nr.collapse(false); }
             } else {
-                nr.setStart(r.startContainer, r.startOffset);
+                // Never collapse the caret into a deletion husk (the empty
+                // text node left when the selection covered a node's whole
+                // text): WebKit normalizes such a caret to the nearest
+                // previous position — in a table that is the previous CELL's
+                // tail — and the refresh then faithfully restores the drifted
+                // caret. Anchor at the husk's slot in its parent instead.
+                var sc = r.startContainer, so = r.startOffset;
+                if (sc.nodeType === 3 && sc.textContent === '' && sc.parentNode) {
+                    var hp = sc.parentNode, hi = Array.prototype.indexOf.call(hp.childNodes, sc);
+                    hp.removeChild(sc);
+                    nr.setStart(hp, hi);
+                } else {
+                    nr.setStart(sc, so);
+                }
             }
             nr.collapse(true);
             sel.removeAllRanges(); sel.addRange(nr);
