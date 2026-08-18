@@ -817,3 +817,70 @@ test('Enter at the start of a paragraph opens an empty paragraph above, typing f
   beforeInput(t.win, 'insertText', 'x');
   assert.equal(t.md(), 'alpha one\n\nx\n\nbeta two\n');
 });
+
+// Selection deletes inside one block are performed by the editor, not WebKit
+// — WebKit fuses the surviving halves into one formatting run (bold leaks
+// over previously-plain text and gets written to the file). Contract: a
+// text-only edit never changes the formatting of text it didn't touch.
+function rangeSelect(t, fromText, fromOff, toText, toOff) {
+  const doc = t.win.document, sel = t.win.getSelection(), r = doc.createRange();
+  const walk = doc.createTreeWalker(doc.getElementById('content'), t.win.NodeFilter.SHOW_TEXT);
+  let n, a = null, b = null;
+  while ((n = walk.nextNode())) {
+    if (!a && n.textContent.includes(fromText)) a = n;
+    if (n.textContent.includes(toText)) b = n;
+  }
+  r.setStart(a, a.textContent.indexOf(fromText) + fromOff);
+  r.setEnd(b, b.textContent.indexOf(toText) + toOff);
+  sel.removeAllRanges(); sel.addRange(r);
+  return r;
+}
+function dispatchInput(t, inputType, data) {
+  const sel = t.win.getSelection();
+  const ev = new t.win.InputEvent('beforeinput', { inputType, data: data ?? null, bubbles: true, cancelable: true });
+  (sel.anchorNode.nodeType === 1 ? sel.anchorNode : sel.anchorNode.parentNode).dispatchEvent(ev);
+  return ev;
+}
+
+test('deleting across a bold boundary keeps each survivor its own style', async () => {
+  const t = await setup('**AAAAAAAAAA**BBBBBBBBBB\n');
+  rangeSelect(t, 'AAAAAAAAAA', 5, 'BBBBBBBBBB', 5);
+  const ev = dispatchInput(t, 'deleteContentBackward');
+  assert.ok(ev.defaultPrevented, 'selection delete must not be left to WebKit');
+  t.win.saveNow();
+  assert.equal(t.md(), '**AAAAA**BBBBB\n');
+});
+
+test('typing over a selection spanning a bold boundary inserts at the seam', async () => {
+  const t = await setup('**AAAAAAAAAA**BBBBBBBBBB\n');
+  rangeSelect(t, 'AAAAAAAAAA', 5, 'BBBBBBBBBB', 5);
+  const ev = dispatchInput(t, 'insertText', 'x');
+  assert.ok(ev.defaultPrevented);
+  t.win.saveNow();
+  assert.equal(t.md(), '**AAAAA**xBBBBB\n');
+});
+
+test('typing over a selection inside a bold run stays bold', async () => {
+  const t = await setup('**alpha beta**\n');
+  rangeSelect(t, 'beta', 0, 'beta', 4);
+  dispatchInput(t, 'insertText', 'x');
+  t.win.saveNow();
+  assert.equal(t.md(), '**alpha x**\n');
+});
+
+test('a delete spanning two list items merges them, formatting intact', async () => {
+  const t = await setup('- aaa **bbb**\n- ccc ddd\n');
+  rangeSelect(t, 'bbb', 1, 'ccc', 2);
+  const ev = dispatchInput(t, 'deleteContentBackward');
+  assert.ok(ev.defaultPrevented);
+  t.win.saveNow();
+  assert.equal(t.md(), '- aaa **b**c ddd\n');
+});
+
+test('keydown forward Delete at the end of a paragraph merges the next one up', async () => {
+  const t = await setup('alpha one\n\nbeta two\n');
+  caret(t.win, { text: 'alpha one', at: 9 });
+  const ev = pressKey(t.win, 'Delete');
+  assert.ok(ev.defaultPrevented, 'must be handled at keydown — no beforeinput will come');
+  assert.equal(t.md(), 'alpha onebeta two\n');
+});

@@ -958,6 +958,28 @@
             if (!div) { e.preventDefault(); return; }
             var i = segIndexOf(div), seg = _segments[i];
             var t = e.inputType;
+            // A selection delete (or type-over) is never left to WebKit: its
+            // editing engine fuses the surviving halves into one formatting
+            // run — deleting from bold into plain re-bolds the plain tail,
+            // and the flush faithfully writes that to the file — and some of
+            // its merges produce DOM the reconciler must refuse (a revert).
+            // Range.deleteContents() removes exactly the selected characters:
+            // every survivor keeps its own formatting, and the ordinary flush
+            // folds the result. Cell-crossing selections stay native (the
+            // table's structure is not ours to chew either).
+            if (!sel.isCollapsed && seg && seg.token &&
+                (t.indexOf('delete') === 0 || t === 'insertText')) {
+                var dr = sel.getRangeAt(0);
+                if (segDivFor(dr.startContainer) === div && segDivFor(dr.endContainer) === div &&
+                    cellOf(dr.startContainer, div) === cellOf(dr.endContainer, div)) {
+                    e.preventDefault();
+                    pushTypingUndo();
+                    deleteSelectionExact(dr, div);
+                    if (t === 'insertText' && e.data) insertAtCaret(e.data);
+                    scheduleSave();
+                    return;
+                }
+            }
             if (t === 'insertText') {
                 // Typing into an empty slot (transient paragraph, or a new empty
                 // <li>) can't be read back from the DOM — fold it into source.
@@ -981,6 +1003,59 @@
             e.preventDefault(); // out of vocabulary (hr, colour, drop, paste handled below)
         }
 
+        // The nearest table cell holding `node` (null outside cells) — the
+        // boundary selection surgery must never cross.
+        function cellOf(node, div) {
+            var n = node;
+            while (n && n !== div) { if (n.nodeType === 1 && /^T[DH]$/.test(n.tagName)) return n; n = n.parentNode; }
+            return null;
+        }
+        // The innermost paragraph-ish container of `node` within the block.
+        function innerBlockOf(node, div) {
+            var n = node;
+            while (n && n !== div) { if (n.nodeType === 1 && /^(LI|P|H[1-6]|TD|TH)$/.test(n.tagName)) return n; n = n.parentNode; }
+            return null;
+        }
+        // Remove exactly the selected characters. When the selection spanned
+        // two paragraph containers (two list items), join the survivors into
+        // the first — word-processor semantics — leaving each character's own
+        // formatting untouched. Emptied shells left behind are invisible and
+        // the re-render from the folded source sheds them. Caret lands at the
+        // cut.
+        function deleteSelectionExact(r, div) {
+            var ba = innerBlockOf(r.startContainer, div), bb = innerBlockOf(r.endContainer, div);
+            r.deleteContents();
+            var sel = window.getSelection(), nr = document.createRange();
+            if (ba && bb && ba !== bb) {
+                var first = bb.firstChild;
+                while (bb.firstChild) ba.appendChild(bb.firstChild);
+                // The donor shell (and any container it empties, e.g. its own
+                // <li>) must go: readback keeps empty items as caret hosts, so
+                // a leftover shell would fold back in as a bare bullet.
+                var shell = bb;
+                while (shell && shell !== div && !shell.childNodes.length) {
+                    var sp = shell.parentNode; sp.removeChild(shell); shell = sp;
+                }
+                if (first) { nr.setStartBefore(first); }
+                else { nr.selectNodeContents(ba); nr.collapse(false); }
+            } else {
+                nr.setStart(r.startContainer, r.startOffset);
+            }
+            nr.collapse(true);
+            sel.removeAllRanges(); sel.addRange(nr);
+        }
+        // Insert typed text at the collapsed caret. A text node landing inside
+        // a formatting element keeps its style (typing over a bold word stays
+        // bold); at a formatting seam it comes out plain.
+        function insertAtCaret(text) {
+            var sel = window.getSelection();
+            if (!sel.rangeCount) return;
+            var r = sel.getRangeAt(0), tn = document.createTextNode(text);
+            r.insertNode(tn);
+            r.setStartAfter(tn); r.collapse(true);
+            sel.removeAllRanges(); sel.addRange(r);
+        }
+
         // Backspace with the caret at a block's edge is never a plain in-island
         // character delete: it removes an empty (transient) paragraph, merges
         // list items, or merges blocks. Reached from beforeinput when WebKit
@@ -995,6 +1070,36 @@
             if (seg.type === 'list' && caretAtItemStart(div)) { e.preventDefault(); doMergeListItem(div); return true; }
             var sel = window.getSelection();
             if (atBlockStart(sel, div) && i > 0) { e.preventDefault(); doMerge(div); return true; }
+            return false;
+        }
+
+        // Forward Delete (fn+Delete) with the caret at a paragraph-like
+        // block's end — the mirror of backspaceAtBlockEdge: nothing to eat
+        // inside the island, so no beforeinput ever fires. Pull the next
+        // block up; skip blank separators, remove an empty transient, stop
+        // at read-only blocks (merging across a code fence would be a shock).
+        function forwardDeleteAtBlockEnd(e, div) {
+            if (!div) return false;
+            var i = segIndexOf(div), seg = _segments[i];
+            if (!seg) return false;
+            if (seg.transient) { elog('keydown Delete | transient seg=' + i); e.preventDefault(); removeTransient(i); return true; }
+            if (!seg.token || seg.type === 'list') return false;
+            var sel = window.getSelection();
+            var local = EditorCore.domOffsetToSourceOffset(div, sel.anchorNode, sel.anchorOffset, seg.token);
+            if (local < seg.raw.replace(/\s+$/, '').length) return false;
+            for (var j = i + 1; j < _segments.length; j++) {
+                var n = _segments[j];
+                if (n.type === 'space') continue;
+                if (n.transient) { e.preventDefault(); removeTransient(j); return true; }
+                if (!n.editable) return false;
+                var nd = contentEl().querySelector('[data-seg="' + j + '"]');
+                if (!nd) return false;
+                elog('keydown Delete | merge seg=' + j + ' up into seg=' + i);
+                e.preventDefault();
+                if (!flushSegment(div)) { revertSeg(div); return true; }
+                doMerge(nd);
+                return true;
+            }
             return false;
         }
 
@@ -1381,9 +1486,12 @@
             // (block start, empty transient) never fires a beforeinput at all
             // — WebKit won't start an edit that would cross the contenteditable
             // boundary — so the edge cases must be caught at the keystroke.
-            if (e.key === 'Backspace' && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+            if ((e.key === 'Backspace' || e.key === 'Delete') && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey) {
                 var bsel = window.getSelection();
-                if (bsel.rangeCount && bsel.isCollapsed && backspaceAtBlockEdge(e, segDivFor(bsel.anchorNode))) return;
+                if (!bsel.rangeCount || !bsel.isCollapsed) return;
+                var bdiv = segDivFor(bsel.anchorNode);
+                if (e.key === 'Backspace') backspaceAtBlockEdge(e, bdiv);
+                else forwardDeleteAtBlockEnd(e, bdiv);
                 return;
             }
             // Tab / Shift+Tab — not delivered as beforeinput by WKWebView. On a
