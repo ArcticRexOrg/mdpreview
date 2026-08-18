@@ -1303,3 +1303,46 @@ test('Enter at the start of a heading opens a paragraph above, intact heading', 
   beforeInput(t.win, 'insertText', 'x');
   assert.equal(t.md().replace(/\n+$/, ''), 'para before\n\nx\n\n## The vendor landscape');
 });
+
+// Multi-paragraph paste: the old path flattened every newline to a space, so
+// pasted paragraphs could never arrive as paragraphs. A paragraph-bearing
+// paste now splices into the source (same machinery as cross-block edits);
+// single-line pastes stay native, and table cells keep the flattening.
+function pasteText(t, text) {
+  const sel = t.win.getSelection();
+  const ev = new t.win.Event('paste', { bubbles: true, cancelable: true });
+  ev.clipboardData = { getData: () => text };
+  const a = sel.anchorNode;
+  (a.nodeType === 1 ? a : a.parentNode).dispatchEvent(ev);
+}
+
+test('pasting two paragraphs lands two paragraphs', async () => {
+  const t = await setup('alpha one\n\nomega end\n');
+  caret(t.win, { text: 'alpha one', at: 9 });
+  pasteText(t, '\n\nfirst para\n\nsecond para');
+  assert.equal(t.md().replace(/\n+$/, ''), 'alpha one\n\nfirst para\n\nsecond para\n\nomega end');
+});
+
+test('pasting paragraphs over an in-block selection replaces it', async () => {
+  const t = await setup('alpha WORD omega\n');
+  rangeSelect(t, 'WORD', 0, 'WORD', 4);
+  pasteText(t, 'one\n\ntwo');
+  assert.equal(t.md().replace(/\n+$/, ''), 'alpha one\n\ntwo omega');
+});
+
+test('markdown in a paste arrives as markdown', async () => {
+  const t = await setup('alpha one\n\nomega end\n');
+  caret(t.win, { text: 'alpha one', at: 9 });
+  pasteText(t, '\n\n- bullet a\n- bullet b');
+  assert.ok(t.doc.querySelectorAll('#content li').length >= 2, 'bullets render');
+  assert.ok(t.md().includes('- bullet a\n- bullet b'), t.md());
+});
+
+test('a multi-line paste into a table cell stays flattened', async () => {
+  const t = await setup('| a | b |\n|---|---|\n| left | right |\n');
+  caret(t.win, { text: 'left', at: 4 });
+  pasteText(t, 'x\n\ny');
+  t.win.saveNow();
+  const md = t.md();
+  assert.ok(md.split('\n').length <= 4, 'table stays a table: ' + JSON.stringify(md));
+});

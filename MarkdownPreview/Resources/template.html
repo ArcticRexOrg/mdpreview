@@ -1297,9 +1297,25 @@
             var sel = window.getSelection();
             if (!sel.rangeCount || !segDivFor(sel.anchorNode)) return;
             e.preventDefault();
-            pushUndo();
-            var text = (e.clipboardData || window.clipboardData).getData('text/plain') || '';
+            var text = ((e.clipboardData || window.clipboardData).getData('text/plain') || '').replace(/\r\n?/g, '\n');
             elog('paste ' + exc(text, 40) + ' | ' + selDesc());
+            // A paragraph-bearing paste splices the text into the source —
+            // doCrossBlockEdit's machinery, which handles a same-block or
+            // collapsed selection just as well. The old path flattened every
+            // newline to a space, so pasted paragraphs could never arrive as
+            // paragraphs. Text is spliced verbatim, so markdown pastes as
+            // markdown. Tables keep the flattening (a raw blank line inside
+            // a row would break it), as does a paste with no interior
+            // newlines — native insertText inherits inline formatting.
+            var r = sel.getRangeAt(0);
+            var da = segDivFor(r.startContainer), db = segDivFor(r.endContainer);
+            var sa = da && _segments[segIndexOf(da)], sb = db && _segments[segIndexOf(db)];
+            if (/\n/.test(text.replace(/\n+$/, '')) && sa && sb &&
+                sa.type !== 'table' && sb.type !== 'table') {
+                doCrossBlockEdit({ r: r, da: da, db: db }, text);
+                return;
+            }
+            pushUndo();
             document.execCommand('insertText', false, text.replace(/\r?\n+/g, ' '));
             scheduleSave();
         }
