@@ -178,6 +178,34 @@
            clickable. (Non-editable contexts keep the pointer full-time.) */
         body.meta-held [contenteditable="true"] a { cursor: pointer; }
 
+        /* Heading-level badge in the left gutter: font size alone can't tell
+           H3 from H5 at a glance, and the Shift+Cmd+H/G ladder needs visible
+           feedback. Editing view only (.seg exists only there) — pseudo
+           content never enters textContent, so the reconciler never sees it,
+           and document/PDF mode renders without it. Inherits the heading's
+           color so every theme keeps its own contrast. */
+        #content .seg h1, #content .seg h2, #content .seg h3,
+        #content .seg h4, #content .seg h5, #content .seg h6 { position: relative; }
+        #content .seg h1::before, #content .seg h2::before, #content .seg h3::before,
+        #content .seg h4::before, #content .seg h5::before, #content .seg h6::before {
+            position: absolute;
+            right: 100%;
+            margin-right: 0.75em;
+            top: 50%;
+            transform: translateY(-50%);
+            font: 600 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+            letter-spacing: 0.02em;
+            color: inherit;
+            opacity: 0.35;
+            pointer-events: none;
+        }
+        #content .seg h1::before { content: "H1"; }
+        #content .seg h2::before { content: "H2"; }
+        #content .seg h3::before { content: "H3"; }
+        #content .seg h4::before { content: "H4"; }
+        #content .seg h5::before { content: "H5"; }
+        #content .seg h6::before { content: "H6"; }
+
         /* A block demoted to read-only (its display↔source map can't be
            trusted) is indistinguishable from an editable one until a click
            goes dead. Reveal it on hover: a faint dashed outline plus a small
