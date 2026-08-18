@@ -351,3 +351,26 @@ test('bold runs separated by a visible space are not merged', () => {
   const r = core.reconcileDomEdit(t.el, t.token, marked);
   assert.ok(r && !r.changed, 'untouched block must read as unchanged');
 });
+
+// A selection delete that empties an inline element leaves an empty text
+// node inside it — a husk innerHTML serialization hides. It must not count
+// as an edge item: with the husk as items[0], the edge trim operated on ""
+// and the real cell-leading space went untrimmed — unrepresentable as cell
+// padding, so the whole edit reverted (editor.log 2026-08-18 23:42).
+test('emptied strong in a table cell folds; its husk is not the cell edge', () => {
+  const t = renderBlock('| a | b |\n|---|---|\n| **X** — tail | c |\n');
+  const strong = t.el.querySelector('strong');
+  strong.firstChild.textContent = ''; // keep the empty text node, like deleteContents
+  const r = core.reconcileDomEdit(t.el, t.token, marked);
+  assert.ok(r && r.changed, 'edit must fold, not revert');
+  assert.ok(r.raw.includes('| — tail |'), r.raw);
+});
+
+test('emptied strong at a paragraph start folds; leading space trims', () => {
+  const t = renderBlock('**X** tail\n');
+  const strong = t.el.querySelector('strong');
+  strong.firstChild.textContent = '';
+  const r = core.reconcileDomEdit(t.el, t.token, marked);
+  assert.ok(r && r.changed, 'edit must fold, not revert');
+  assert.equal(r.raw.replace(/\n+$/, ''), 'tail');
+});

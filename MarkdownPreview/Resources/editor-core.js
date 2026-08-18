@@ -1144,7 +1144,12 @@
     var out = [];
     (function walk(node) {
       for (var n = node.firstChild; n; n = n.nextSibling) {
-        if (n.nodeType === 3) { out.push(n); continue; }
+        // An empty text node — the husk a selection delete leaves inside an
+        // emptied inline element — is not an edge: counting it as items[0]
+        // made the edge trim operate on "" while the real edge whitespace sat
+        // untouched one item later (and serialized innerHTML hides the husk,
+        // which is why this refusal resisted log-based reproduction).
+        if (n.nodeType === 3) { if (n.textContent) out.push(n); continue; }
         if (n.nodeType !== 1) continue;
         var tag = n.tagName.toUpperCase();
         if (n !== container && EDGE_BLOCK[tag]) continue;   // a nested block — not this container's edge
