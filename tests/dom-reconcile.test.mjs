@@ -293,3 +293,29 @@ test('a visible empty element (pasted checkbox) refuses, never silently drops', 
   const r = core.reconcileDomEdit(t.el, t.token, marked);
   assert.equal(r, null, 'visible non-text content is out of model — refuse');
 });
+
+// Deleting the tail of a <strong>'s text leaves the run's trailing space
+// inside the tag, and WebKit rewrites the now-collapsible space after the tag
+// to &nbsp;. Markdown cannot spell whitespace inside emphasis delimiters, so
+// the printed candidate hoists it outside — the canonical fingerprint must
+// treat the two placements as the same structure, or the edit reverts
+// (2026-08-18 editor.log: "for DNV Cyber" deleted from a bold run).
+test('deleting the tail of a strong run strands its space inside the tag', () => {
+  const t = renderBlock('- one\n- **a temporary exception for DNV Cyber** — tail text here\n');
+  const strong = t.el.querySelector('strong');
+  strong.firstChild.textContent = 'a temporary exception ';
+  const after = strong.nextSibling; // " — tail text here"
+  after.textContent = '\u00A0' + after.textContent.replace(/^ /, '');
+  const r = core.reconcileDomEdit(t.el, t.token, marked);
+  assert.ok(r && r.changed, 'edit must fold into source, not revert');
+  assert.ok(r.raw.includes('**a temporary exception**'), r.raw);
+});
+
+test('deleting the head of a strong run strands its space inside the tag', () => {
+  const t = renderBlock('lead — **So the request is bold** tail\n');
+  const strong = t.el.querySelector('strong');
+  strong.firstChild.textContent = ' request is bold';
+  const r = core.reconcileDomEdit(t.el, t.token, marked);
+  assert.ok(r && r.changed, 'edit must fold into source, not revert');
+  assert.ok(r.raw.includes('**request is bold**'), r.raw);
+});

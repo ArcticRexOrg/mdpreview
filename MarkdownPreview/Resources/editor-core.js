@@ -2217,7 +2217,41 @@
   //    content after it inside its block renders anything)
   //  - element attributes other than href/src/alt (classes, data-*)
   //  - `base` prefix on href/src (the live DOM resolves relative paths)
+  // Markdown cannot spell emphasis whose run starts or ends on whitespace —
+  // `**x **` does not lex — so the printer hoists such whitespace outside the
+  // delimiters (canonText). WebKit's deletes strand exactly the unspellable
+  // shape: cutting the tail off a <strong>'s text leaves the run's trailing
+  // space inside the tag. A reader cannot tell the two apart and only the
+  // hoisted one has a source, so the fingerprint reads edge whitespace of an
+  // emphasis-family element as sitting outside it. Code spans stay put:
+  // whitespace inside them is visible content with a spelling. Descendants
+  // are processed before ancestors so whitespace bubbles the whole way out
+  // (`<strong><em>a </em></strong>` → `<strong><em>a</em></strong> `).
+  function hoistEmphasisEdgeWs(root) {
+    var els = root.querySelectorAll ? root.querySelectorAll('em,strong,del') : [];
+    for (var i = els.length - 1; i >= 0; i--) {
+      var e = els[i], p = e.parentNode, n, m;
+      if (!p) continue;
+      while ((n = e.firstChild) && n.nodeType === 3 && (m = /^\s+/.exec(n.textContent))) {
+        if (m[0] === n.textContent) { p.insertBefore(n, e); continue; }
+        p.insertBefore(root.ownerDocument.createTextNode(m[0]), e);
+        n.textContent = n.textContent.slice(m[0].length);
+        break;
+      }
+      while ((n = e.lastChild) && n.nodeType === 3 && (m = /\s+$/.exec(n.textContent))) {
+        if (m[0] === n.textContent) { p.insertBefore(n, e.nextSibling); continue; }
+        p.insertBefore(root.ownerDocument.createTextNode(m[0]), e.nextSibling);
+        n.textContent = n.textContent.slice(0, -m[0].length);
+        break;
+      }
+    }
+  }
   function canonicalOfEl(el, base) {
+    if (el.querySelector && el.querySelector('em,strong,del')) {
+      var hoisted = el.cloneNode(true);
+      hoistEmphasisEdgeWs(hoisted);
+      el = hoisted;
+    }
     var out = [], buf = '';
     function flush() { if (buf) { out.push(JSON.stringify(buf)); buf = ''; } }
     function deBase(v) {
