@@ -1051,20 +1051,28 @@
                 // bullet, three dashes flush-convert to an hr.
                 if (seg && seg.transient && e.data === '-') { e.preventDefault(); materializeTransient(i, '\\-', 2); return; }
                 if (seg && seg.transient && e.data) { e.preventDefault(); materializeTransient(i, e.data, e.data.length); return; }
-                // "- " on a line holding just the escaped dash: the user is
-                // starting a list — unescape into the real empty bullet.
-                if (e.data === ' ' && seg && seg.type === 'paragraph' && /^\\-\n*$/.test(seg.raw)) {
-                    e.preventDefault();
-                    elog('dash-space seg=' + i + ' — starting a list');
-                    pushUndo();
-                    seg.raw = '-' + seg.raw.slice(2);
-                    relexSeg(seg);
-                    _rawMarkdown = currentMarkdown();
-                    renderReading();
-                    var ld = contentEl().querySelector('[data-seg="' + i + '"]');
-                    if (ld) setCaretSource(ld, _segments[i], 1);
-                    scheduleSave();
-                    return;
+                // Marker-space on a line holding just a list marker — "- ",
+                // "1. ", "1) " — the user is starting a list: realize the bare
+                // marker item. The lone marker exists only as escaped literal
+                // text (it could not be typed otherwise), and the check reads
+                // the DOM, not seg.raw, so it works whether the escaping flush
+                // has already run or the marker's tail keystroke is still
+                // pending.
+                if (e.data === ' ' && seg && seg.type === 'paragraph') {
+                    var mk = (div.textContent || '').trim();
+                    if (/^(-|\d{1,9}[.)])$/.test(mk)) {
+                        e.preventDefault();
+                        elog('marker-space seg=' + i + ' — starting a list: ' + mk);
+                        pushUndo();
+                        seg.raw = mk + ((seg.raw.match(/\n+$/) || [''])[0]);
+                        relexSeg(seg);
+                        _rawMarkdown = currentMarkdown();
+                        renderReading();
+                        var ld = contentEl().querySelector('[data-seg="' + i + '"]');
+                        if (ld) setCaretSource(ld, _segments[i], mk.length);
+                        scheduleSave();
+                        return;
+                    }
                 }
                 if (e.data && _pendingEmpty && _pendingEmpty.segIndex === i) {
                     var li = caretAtItemStart(div);

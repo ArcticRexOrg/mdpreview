@@ -1175,3 +1175,38 @@ test('Backspace at the start of a bold-leading later item merges it up', async (
   pressKey(t.win, 'Backspace');
   assert.equal(t.md(), '- plain**bold** second\n');
 });
+
+// "1. " on a fresh line starts an ordered list (the numbered sibling of
+// dash-space). The lone "1." exists only as literal text — the reconciler
+// escapes it — so marker-space realizes the bare ordered item, and Enter
+// then continues the numbering.
+test('typing "1. " on a fresh line starts a numbered list', async () => {
+  const t = await setup('alpha one\n');
+  caret(t.win, { text: 'alpha one', at: 9 });
+  beforeInput(t.win, 'insertParagraph');       // transient below
+  beforeInput(t.win, 'insertText', '1');       // materializes paragraph "1"
+  // the "." keystroke is native; emulate its DOM effect
+  const n = [...t.doc.querySelectorAll('#content p')].map(p => p.firstChild)
+    .find(x => x && x.textContent === '1');
+  n.textContent = '1.';
+  beforeInput(t.win, 'insertText', ' ');       // marker-space converts
+  assert.ok(t.doc.querySelector('#content ol'), 'ordered list started');
+  beforeInput(t.win, 'insertText', 'x');
+  assert.equal(t.md().replace(/\n+$/, ''), 'alpha one\n\n1. x');
+  beforeInput(t.win, 'insertParagraph');       // next item
+  beforeInput(t.win, 'insertText', 'y');
+  assert.equal(t.md().replace(/\n+$/, ''), 'alpha one\n\n1. x\n2. y');
+});
+
+test('a "2." start keeps its own numbering', async () => {
+  const t = await setup('alpha one\n');
+  caret(t.win, { text: 'alpha one', at: 9 });
+  beforeInput(t.win, 'insertParagraph');
+  beforeInput(t.win, 'insertText', '2');
+  const n = [...t.doc.querySelectorAll('#content p')].map(p => p.firstChild)
+    .find(x => x && x.textContent === '2');
+  n.textContent = '2.';
+  beforeInput(t.win, 'insertText', ' ');
+  beforeInput(t.win, 'insertText', 'x');
+  assert.equal(t.md().replace(/\n+$/, ''), 'alpha one\n\n2. x');
+});
