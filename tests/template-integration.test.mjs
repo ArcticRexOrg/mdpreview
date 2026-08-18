@@ -997,3 +997,17 @@ test('saveLanded retires the provisional baseline', async () => {
   t.win.applyDiskChange('fresh disk\n');
   assert.equal(t.win.currentMarkdown(), 'fresh disk\n');
 });
+
+// Double-Enter mid-list exits into a paragraph between the halves. The
+// transient paragraph holds no bytes, so the split needs an explicit
+// blank-line separator seg — without it the intermediate save glued the
+// halves ("- two- three") onto disk if the user left before typing.
+test('double-Enter mid-list exits cleanly; the intermediate save is unmangled', async () => {
+  const t = await setup('- one\n- two\n- three\n');
+  caret(t.win, { text: 'two', at: 3 });
+  beforeInput(t.win, 'insertParagraph');   // new empty item after "two"
+  beforeInput(t.win, 'insertParagraph');   // exit the list
+  assert.equal(t.md(), '- one\n- two\n\n- three\n', 'halves separated, never glued');
+  beforeInput(t.win, 'insertText', 'P');
+  assert.equal(t.md(), '- one\n- two\n\nP\n\n- three\n');
+});

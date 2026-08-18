@@ -1276,7 +1276,15 @@
             var beforeSegs = before ? EditorCore.segment(before, marked, document) : [];
             var afterSegs = after ? EditorCore.segment(after, marked, document) : [];
             var tp = makeTransient();
-            var repl = beforeSegs.concat([tp], afterSegs);
+            // The transient contributes no bytes, so with both halves present
+            // the raw join needs an explicit blank-line separator between
+            // them — without it, currentMarkdown() glued the halves
+            // ("- two- three") and the autosave persisted the mangle if the
+            // user left before typing into the new paragraph.
+            var sep = (before && after)
+                ? [{ index: 0, type: 'space', raw: '\n\n', token: null, editable: false }]
+                : [];
+            var repl = beforeSegs.concat(sep, [tp], afterSegs);
             // A trailing empty item can orphan its " \n" into a following space
             // seg; drop it too — but ONLY when it's truly trailing (nothing real
             // after it). When a paragraph follows, that space seg is the
@@ -1287,7 +1295,7 @@
             _segments.splice.apply(_segments, [i, removeCount].concat(repl));
             _rawMarkdown = currentMarkdown();
             renderReading(true);
-            placeCaretInTransient(i + beforeSegs.length);
+            placeCaretInTransient(i + beforeSegs.length + sep.length);
             scheduleSave();
         }
 
