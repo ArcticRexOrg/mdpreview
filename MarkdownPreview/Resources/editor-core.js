@@ -88,6 +88,9 @@
         type: token.type,
         raw: token.raw,
         token: token,
+        // Not markdown-editable (the laws and the reconcile machinery do not
+        // apply); the template opens it as an opaque plain-text surface with
+        // its own byte-for-byte flush.
         editable: false,
       });
     }

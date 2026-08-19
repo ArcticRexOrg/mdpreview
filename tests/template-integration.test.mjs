@@ -99,7 +99,8 @@ test('frontmatter renders as a read-only metadata panel without changing source'
   assert.match(panel.textContent, /name: get-moving/);
   assert.match(panel.textContent, /Lead <decisively> & safely\./);
   assert.equal(panel.querySelector('decisively'), null, 'YAML-looking HTML must render as text');
-  assert.equal(segment.getAttribute('contenteditable'), 'false');
+  assert.equal(segment.getAttribute('contenteditable'), 'true', 'frontmatter edits as opaque text');
+  assert.equal(panel.querySelector('.frontmatter-label').getAttribute('contenteditable'), 'false', 'the label does not');
   assert.equal(t.doc.querySelector('.frontmatter hr'), null);
   assert.equal(t.doc.querySelector('.frontmatter h2'), null);
   assert.equal(t.doc.querySelector('h1').textContent, 'Get Moving');
@@ -1345,4 +1346,41 @@ test('a multi-line paste into a table cell stays flattened', async () => {
   t.win.saveNow();
   const md = t.md();
   assert.ok(md.split('\n').length <= 4, 'table stays a table: ' + JSON.stringify(md));
+});
+
+// Frontmatter editing: the panel's YAML body is opaque plain text mapping
+// byte-for-byte to the content between the fences. The flush is a text
+// read; a lone "---" line inside would end the block early and is refused.
+test('editing the frontmatter body folds into the fences', async () => {
+  const t = await setup('---\nname: doc\n---\n\n# Title\n');
+  const pre = t.doc.querySelector('.frontmatter pre');
+  pre.textContent = 'name: doc\nauthor: toby';
+  const sel = t.win.getSelection(), r = t.doc.createRange();
+  r.selectNodeContents(pre); r.collapse(false);
+  sel.removeAllRanges(); sel.addRange(r);
+  t.win.saveNow();
+  assert.equal(t.md(), '---\nname: doc\nauthor: toby\n---\n\n# Title\n');
+  assert.equal(t.doc.querySelector('h1').textContent, 'Title', 'document below unharmed');
+});
+
+test('Enter in the frontmatter inserts a literal newline', async () => {
+  const t = await setup('---\nname: doc\n---\n\n# Title\n');
+  const pre = t.doc.querySelector('.frontmatter pre');
+  const node = pre.querySelector('code').firstChild;
+  const sel = t.win.getSelection(), r = t.doc.createRange();
+  r.setStart(node, node.textContent.length); r.collapse(true);
+  sel.removeAllRanges(); sel.addRange(r);
+  const ev = new t.win.InputEvent('beforeinput', { inputType: 'insertParagraph', bubbles: true, cancelable: true });
+  node.parentNode.dispatchEvent(ev);
+  assert.ok(ev.defaultPrevented, 'paragraphing intercepted');
+  t.win.saveNow();
+  assert.equal(t.md(), '---\nname: doc\n\n---\n\n# Title\n');
+});
+
+test('frontmatter content that would break the fences is refused', async () => {
+  const t = await setup('---\nname: doc\n---\n\n# Title\n');
+  const pre = t.doc.querySelector('.frontmatter pre');
+  pre.textContent = 'name: doc\n---\nsneaky: line';
+  t.win.saveNow();
+  assert.equal(t.md(), '---\nname: doc\n---\n\n# Title\n', 'reverted, not corrupted');
 });

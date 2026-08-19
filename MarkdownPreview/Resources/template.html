@@ -308,7 +308,7 @@
             var parsed = EditorCore.leadingFrontmatter(raw);
             var yaml = parsed ? parsed.content.replace(/\r?\n$/, '') : raw;
             return '<aside class="frontmatter" aria-label="Frontmatter">' +
-                '<div class="frontmatter-label">Frontmatter</div>' +
+                '<div class="frontmatter-label" contenteditable="false">Frontmatter</div>' +
                 '<pre><code class="language-yaml">' + escapeHTML(yaml) + '</code></pre>' +
                 '</aside>';
         }
@@ -470,7 +470,10 @@
                     content.appendChild(div);
                     return;
                 }
-                div.setAttribute('contenteditable', (editing && seg.editable) ? 'true' : 'false');
+                // Frontmatter is editable as opaque plain text (its own
+                // flush), though it is outside the markdown model's
+                // editable census.
+                div.setAttribute('contenteditable', (editing && (seg.editable || seg.type === 'frontmatter')) ? 'true' : 'false');
                 // A text-like block that WOULD be editable but was demoted —
                 // its display↔source map couldn't be trusted — looks identical
                 // to an editable one, so a dead click reads as a broken editor.
@@ -795,6 +798,27 @@
             if (div.isConnected === false) return true;
             var i = segIndexOf(div), seg = _segments[i];
             if (!seg || seg.transient || !seg.token) return true; // no source to fold into
+            // Frontmatter is opaque plain text: the <pre> body maps
+            // byte-for-byte to the content between the fences, so the flush
+            // is a text read, not a reconcile. The round-trip guard refuses
+            // content that would break the fences (a lone "---" line ends
+            // the block early), reverting instead of corrupting.
+            if (seg.type === 'frontmatter') {
+                var fmPre = div.querySelector('.frontmatter pre');
+                if (!fmPre) return true;
+                var fmTxt = fmPre.textContent;
+                if (fmTxt === (seg.token.text || '').replace(/\r?\n$/, '')) return true;
+                var fmRaw = '---\n' + fmTxt + '\n---' + ((seg.raw.match(/\n*$/) || ['\n'])[0] || '\n');
+                var fmRe = EditorCore.leadingFrontmatter(fmRaw);
+                if (!fmRe || fmRe.raw !== fmRaw || fmRe.rest !== '') {
+                    elog('flush seg=' + i + ' frontmatter refuses ' + exc(fmTxt, 40) + ' — would break the fences');
+                    return false;
+                }
+                elog('flush seg=' + i + ' frontmatter reconciled ' + exc(fmTxt, 40));
+                seg.raw = fmRaw;
+                seg.token = { type: 'frontmatter', raw: fmRaw, text: fmRe.content };
+                return true;
+            }
             var rec = EditorCore.reconcileDomEdit(div, seg.token, marked, _baseURL);
             if (rec == null) {
                 // Log the remnant's full markup, not just its text: a refusal
@@ -1019,6 +1043,24 @@
             if (!div) { e.preventDefault(); return; }
             var i = segIndexOf(div), seg = _segments[i];
             var t = e.inputType;
+            // Frontmatter edits as opaque text: Enter is a literal newline
+            // (WebKit's paragraphing would defeat the plain-text read-back);
+            // typing and deletes run natively; formatting has no meaning.
+            if (seg && seg.type === 'frontmatter') {
+                if (t === 'insertParagraph' || t === 'insertLineBreak') {
+                    e.preventDefault();
+                    pushTypingUndo();
+                    insertAtCaret('\n');
+                    scheduleSave();
+                    return;
+                }
+                if (t === 'insertText' || t === 'insertReplacementText' ||
+                    t === 'insertCompositionText' || t.indexOf('delete') === 0) {
+                    pushTypingUndo(); scheduleSave(); return;
+                }
+                e.preventDefault();
+                return;
+            }
             // A selection delete (or type-over) is never left to WebKit: its
             // editing engine fuses the surviving halves into one formatting
             // run — deleting from bold into plain re-bolds the plain tail,
