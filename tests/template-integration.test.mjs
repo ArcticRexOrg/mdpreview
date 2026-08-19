@@ -1384,3 +1384,18 @@ test('frontmatter content that would break the fences is refused', async () => {
   t.win.saveNow();
   assert.equal(t.md(), '---\nname: doc\n---\n\n# Title\n', 'reverted, not corrupted');
 });
+
+// Typing "1. " into the middle of a bullet item's text made the printed line
+// "- 1. stay…", which re-lexes as a bullet holding a nested ordered list —
+// every candidate refused and the whole edit reverted (editor.log
+// 2026-08-19 09:31). The item printer now guards its lead like paragraphs.
+test('item text beginning "1. " folds with an escape, not a revert', async () => {
+  const t = await setup('- alpha beta\n- second\n');
+  const node = [...t.doc.querySelectorAll('#content li')].map(li => li.firstChild)
+    .find(n => n && /alpha/.test(n.textContent));
+  node.textContent = '1. stay inside alpha beta';
+  t.win.saveNow();
+  assert.equal(t.md(), '- 1\\. stay inside alpha beta\n- second\n');
+  assert.ok(!t.doc.querySelector('#content ol'), 'no nested ordered list');
+  assert.equal(t.doc.querySelectorAll('#content li').length, 2, 'still two bullets');
+});

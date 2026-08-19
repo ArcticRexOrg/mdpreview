@@ -1052,12 +1052,21 @@
           continue;
         }
         var parts = printInlineParts(canonText(b.text), b.prov || null, marked);
+        // Item text that begins like block structure would nest on re-lex:
+        // "- 1. stay" is a bullet holding an ordered list, not the text
+        // "1. stay" (typing "1. " mid-item reverted the whole edit,
+        // 2026-08-19 09:31). Guard the first printed line's lead, exactly
+        // as renderBlockBody does for paragraphs.
+        var nl0 = parts.s.indexOf('\n');
+        var g0 = guardBlockPrefixPos(nl0 < 0 ? parts.s : parts.s.slice(0, nl0));
+        var ps = g0.at < 0 ? parts.s : g0.s + (nl0 < 0 ? '' : parts.s.slice(nl0));
         if (wantCaret) {
           var local = caret.ch >= b.text.length ? parts.s.length : parts.pos[caret.ch];
           if (local == null) local = parts.s.length;
+          if (g0.at >= 0 && local >= g0.at) local += 1;
           caret.offset = out.length + indent.length + mk.length + 1 + local;
         }
-        out += indent + mk + ' ' + parts.s + sepL;
+        out += indent + mk + ' ' + ps + sepL;
         continue;
       }
       if (b.raw != null) {
