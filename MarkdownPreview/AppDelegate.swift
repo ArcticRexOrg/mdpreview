@@ -24,10 +24,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func handleOpenDocs(_ event: NSAppleEventDescriptor, withReplyEvent reply: NSAppleEventDescriptor) {
-        guard let docList = event.paramDescriptor(forKeyword: AEKeyword(keyDirectObject)) else { return }
-        for i in 1...docList.numberOfItems {
-            guard let item = docList.atIndex(i),
-                  let coerced = item.coerce(toDescriptorType: DescType(typeFileURL)),
+        guard let direct = event.paramDescriptor(forKeyword: AEKeyword(keyDirectObject)) else { return }
+        // The Finder sends a list of files; a script saying `open POSIX file
+        // "…"` sends the one file bare, and a bare descriptor reports zero
+        // items — which used to make the range 1...0 and kill the app.
+        let items: [NSAppleEventDescriptor] = direct.numberOfItems > 0
+            ? (1...direct.numberOfItems).compactMap { direct.atIndex($0) }
+            : [direct]
+        for item in items {
+            guard let coerced = item.coerce(toDescriptorType: DescType(typeFileURL)),
                   let url = URL(dataRepresentation: coerced.data, relativeTo: nil) else { continue }
             if ["md", "markdown"].contains(url.pathExtension.lowercased()) {
                 pendingURLs.append(url)
@@ -36,11 +41,35 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         flushPendingURLs()
     }
 
-    // WindowGroup does not auto-create a window when the app is launched via a
-    // file-open Apple Event, so we create one per URL ourselves.
     private func flushPendingURLs() {
-        while !pendingURLs.isEmpty {
-            presentWindow(for: pendingURLs.removeFirst())
+        let urls = pendingURLs
+        pendingURLs.removeAll()
+        MainActor.assumeIsolated {
+            for url in urls { open(url) }
+        }
+    }
+
+    /// Hand the file to a window SwiftUI already made. One built here carries
+    /// no scene toolbar — no mode switch, no theme, no export — and leaves
+    /// the empty launch window sitting in front of it showing nothing.
+    ///
+    /// At launch the file arrives before the scene exists, so keep asking
+    /// until it does; only if it never appears is a window built here.
+    @MainActor
+    private func open(_ url: URL, deadline: Date? = nil) {
+        if let state = OpenWindows.shared.newest {
+            state.openFile(url)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+        let deadline = deadline ?? Date().addingTimeInterval(5)
+        guard Date() < deadline else {
+            presentWindow(for: url)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+            self?.open(url, deadline: deadline)
         }
     }
 
@@ -71,4 +100,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 extension Notification.Name {
     static let showSearch = Notification.Name("showSearch")
     static let printDocument = Notification.Name("printDocument")
+}
+
+/// The windows currently open, newest first, so a file arriving from the
+/// Finder can be given to one instead of a window built by hand.
+@MainActor
+final class OpenWindows {
+    static let shared = OpenWindows()
+
+    private var states: [() -> AppState?] = []
+
+    func register(_ state: AppState) {
+        states.append { [weak state] in state }
+    }
+
+    var newest: AppState? {
+        states = states.filter { $0() != nil }
+        return states.last?()
+    }
 }

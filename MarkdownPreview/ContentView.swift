@@ -50,20 +50,28 @@ final class AppState: ObservableObject {
     }
 
     private let watcher = FileWatcher()
-    private let defaultRootURL = URL(fileURLWithPath:
-        ProcessInfo.processInfo.environment["MDPREVIEW_ROOT"]
-            ?? FileManager.default.currentDirectoryPath
-    )
+
+    /// Where to browse when the app opens with no file. A launch from the
+    /// Finder, from LaunchServices or from a script has "/" as its working
+    /// directory — never somewhere worth browsing, and scanning it for
+    /// Markdown costs seconds that everything else waits behind.
+    private let defaultRootURL: URL? = {
+        if let root = ProcessInfo.processInfo.environment["MDPREVIEW_ROOT"] {
+            return URL(fileURLWithPath: root)
+        }
+        let cwd = FileManager.default.currentDirectoryPath
+        return cwd == "/" ? nil : URL(fileURLWithPath: cwd)
+    }()
 
     init(initialURL: URL? = nil) {
         if let url = initialURL {
             let dir = url.deletingLastPathComponent()
             rootDirectoryName = dir.lastPathComponent
-            rootNodes = FileNode.loadChildren(of: dir)
+            loadTree(of: dir)
             _claimedURL = url
-        } else {
-            rootDirectoryName = defaultRootURL.lastPathComponent
-            rootNodes = FileNode.loadChildren(of: defaultRootURL)
+        } else if let root = defaultRootURL {
+            rootDirectoryName = root.lastPathComponent
+            loadTree(of: root)
         }
         watcher.onChange = { [weak self] in
             self?.onExternalChange()
@@ -74,6 +82,10 @@ final class AppState: ObservableObject {
         NotificationCenter.default.addObserver(forName: .printDocument, object: nil, queue: .main) { [weak self] _ in
             self?.printDocument()
         }
+        // Findable by the delegate, so a file opened from the Finder lands in
+        // this window rather than one built by hand, which would have no
+        // toolbar.
+        OpenWindows.shared.register(self)
         // Deferred so didSet fires after init completes
         if let url = _claimedURL {
             DispatchQueue.main.async { self.selectedFile = url }
@@ -84,8 +96,22 @@ final class AppState: ObservableObject {
     func openFile(_ url: URL) {
         let dir = url.deletingLastPathComponent()
         rootDirectoryName = dir.lastPathComponent
-        rootNodes = FileNode.loadChildren(of: dir)
+        loadTree(of: dir)
         selectedFile = url
+    }
+
+    /// Fill the sidebar in the background. Finding which directories hold
+    /// Markdown means walking their subtrees, which takes tens of seconds on
+    /// a large root — and a launch that came from a script inherits `/`. On
+    /// the main thread that walk blocks the rendered view and any scripted
+    /// PDF export behind it; the sidebar can simply arrive a moment late.
+    private func loadTree(of directory: URL) {
+        Task.detached(priority: .utility) { [weak self] in
+            let entries = FileNode.scan(directory)
+            await MainActor.run {
+                self?.rootNodes = entries.map { FileNode(url: $0.url, isDirectory: $0.isDirectory) }
+            }
+        }
     }
 
     private func onSelectionChanged() {

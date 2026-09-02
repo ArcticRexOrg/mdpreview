@@ -17,6 +17,7 @@ Pair it with PDF export and configurable templates, and you can go from a rough 
 - **Live preview** — rendered in WebKit with 6 built-in themes (GitHub, Water, Sakura, Simple, Splendor, Air)
 - **Document mode** — print-optimized paginated layout using Paged.js, with headers, footers, and logo placement
 - **PDF export** — configurable page size, margins, headers/footers, and company branding
+- **AppleScript** — render Markdown to PDF from a script or the shell, without opening a window
 - **Find in document** — Cmd+F search with forward/backward navigation
 - **Syntax highlighting** — code blocks highlighted via Highlight.js
 
@@ -41,3 +42,30 @@ Open the app and select a Markdown file from the file tree, or open a `.md` file
 Set `MDPREVIEW_ROOT` to control the default browsing directory.
 
 PDF export settings are stored in `~/Library/Application Support/MarkdownPreview/pdf.json`.
+
+## Scripting
+
+MarkdownPreview is scriptable, so a build script or a batch job can produce the same PDF the Save PDF button does — same page setup from `pdf.json`, same Paged.js layout — rendered off-screen, without disturbing any open window.
+
+```applescript
+tell application "MarkdownPreview"
+    export "/Users/me/notes/report.md" to "/Users/me/notes/report.pdf"
+end tell
+```
+
+From the shell:
+
+```bash
+osascript -e 'tell application "MarkdownPreview" to export "/path/to/report.md"'
+```
+
+- The direct parameter and `to` take an absolute POSIX path or a file reference (`POSIX file "…"`, an alias).
+- `to` is optional; it defaults to the Markdown file with a `.pdf` extension.
+- `theme` is optional and takes a theme name — GitHub (the default), Water, Sakura, Simple, Splendor or Air.
+- The result is the POSIX path of the PDF that was written; failures come back as AppleScript errors.
+
+```applescript
+export POSIX file "/path/report.md" to POSIX file "/path/report.pdf" theme "Sakura"
+```
+
+The full dictionary is in Script Editor (File ▸ Open Dictionary ▸ MarkdownPreview).

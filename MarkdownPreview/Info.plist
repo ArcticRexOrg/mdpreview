@@ -24,6 +24,10 @@
     <string>$(MACOSX_DEPLOYMENT_TARGET)</string>
     <key>NSHumanReadableCopyright</key>
     <string>ArcticRex</string>
+    <key>NSAppleScriptEnabled</key>
+    <true/>
+    <key>OSAScriptingDefinition</key>
+    <string>MarkdownPreview.sdef</string>
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
     <key>CFBundleDocumentTypes</key>

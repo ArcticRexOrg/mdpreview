@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE dictionary SYSTEM "file://localhost/System/Library/DTDs/sdef.dtd">
+<dictionary title="MarkdownPreview Terminology" xmlns:xi="http://www.w3.org/2003/XInclude">
+
+    <xi:include href="file:///System/Library/ScriptingDefinitions/CocoaStandard.sdef"
+                xpointer="xpointer(/dictionary/suite)"/>
+
+    <suite name="MarkdownPreview Suite" code="MdPv"
+           description="Commands for rendering Markdown documents.">
+
+        <command name="export" code="MdPvExpt"
+                 description="Render a Markdown file to PDF, using the page setup in ~/Library/Application Support/MarkdownPreview/pdf.json.">
+            <cocoa class="ExportPDFCommand"/>
+            <direct-parameter description="The Markdown file to render.">
+                <type type="file"/>
+                <type type="text"/>
+            </direct-parameter>
+            <parameter name="to" code="Dest" optional="yes"
+                       description="Where to write the PDF. Defaults to the Markdown file with a .pdf extension.">
+                <cocoa key="Destination"/>
+                <type type="file"/>
+                <type type="text"/>
+            </parameter>
+            <parameter name="theme" code="Thme" type="text" optional="yes"
+                       description="Theme to render with: GitHub, Water, Sakura, Simple, Splendor or Air. Defaults to GitHub.">
+                <cocoa key="Theme"/>
+            </parameter>
+            <result type="text" description="The POSIX path of the PDF that was written."/>
+        </command>
+
+    </suite>
+</dictionary>
