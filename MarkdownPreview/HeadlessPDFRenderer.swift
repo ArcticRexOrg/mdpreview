@@ -83,10 +83,10 @@ final class HeadlessPDFRenderer: NSObject, WKNavigationDelegate, WKScriptMessage
     private var timeout: DispatchWorkItem?
     private var activity: NSObjectProtocol?
 
-    /// Generous, because the first render in a freshly launched app takes
-    /// tens of seconds — see the note in `start` — and a slow PDF beats a
-    /// failed one. Stays under AppleScript's own 120s reply limit.
-    private static let renderTimeout: TimeInterval = 110
+    /// A render that has not finished by now is stuck, not slow — a cold app
+    /// exports a five-page document in about three seconds. Say so rather
+    /// than leaving the script hanging.
+    private static let renderTimeout: TimeInterval = 30
 
     private init(markdown: String,
                  baseURL: URL,
@@ -104,6 +104,8 @@ final class HeadlessPDFRenderer: NSObject, WKNavigationDelegate, WKScriptMessage
         let config = WKWebViewConfiguration()
         config.preferences.setValue(true, forKey: "allowFileAccessFromFileURLs")
         config.userContentController.add(self, name: "paginationDone")
+        config.userContentController.addUserScript(WKUserScript(
+            source: Self.frameQueue, injectionTime: .atDocumentStart, forMainFrameOnly: true))
 
         // Wide enough that the largest configurable page box (A3, 297mm) lays
         // out without the viewport constraining it.
@@ -154,6 +156,64 @@ final class HeadlessPDFRenderer: NSObject, WKNavigationDelegate, WKScriptMessage
             reason: "Rendering a PDF"
         )
         webView.loadFileURL(template, allowingReadAccessTo: URL(fileURLWithPath: "/"))
+        startFramePump()
+    }
+
+    // MARK: - Frames
+
+    /// A page WebKit considers hidden — which an off-screen window's page
+    /// always is — gets no animation frames at all and has its timers aligned
+    /// to one second. Paged.js lays out across those callbacks, so it either
+    /// crawls or never finishes. Rather than lie to WebKit about where the
+    /// window is, the page queues its frame callbacks and the native side,
+    /// whose timers are not throttled, drains the queue: `evaluateJavaScript`
+    /// runs promptly in a throttled page.
+    private static let frameQueue = """
+    (function(){
+        var queue = [], nextId = 1000000000, cancelled = {};
+        function schedule(callback) {
+            var id = nextId++;
+            queue.push({ id: id, callback: callback });
+            return id;
+        }
+        window.requestAnimationFrame = function(callback) { return schedule(callback); };
+        window.cancelAnimationFrame = function(id) { cancelled[id] = true; };
+        var nativeSetTimeout = window.setTimeout.bind(window);
+        var nativeClearTimeout = window.clearTimeout.bind(window);
+        // Only the near-zero delays, which are a way of yielding rather than a
+        // real wait; anything longer keeps its own timer and its own id.
+        window.setTimeout = function(callback, delay) {
+            if (typeof callback === 'function' && (!delay || delay < 20)) return schedule(callback);
+            return nativeSetTimeout.apply(null, arguments);
+        };
+        window.clearTimeout = function(id) {
+            if (id >= 1000000000) { cancelled[id] = true; return; }
+            nativeClearTimeout(id);
+        };
+        window.__drainFrames = function() {
+            var batch = queue;
+            queue = [];
+            var now = performance.now();
+            for (var i = 0; i < batch.length; i++) {
+                if (cancelled[batch[i].id]) { delete cancelled[batch[i].id]; continue; }
+                try { batch[i].callback(now); } catch (e) {}
+            }
+            return queue.length;
+        };
+    })();
+    """
+
+    private var pump: Timer?
+    private var pumping = false
+
+    private func startFramePump() {
+        pump = Timer.scheduledTimer(withTimeInterval: 1.0 / 60, repeats: true) { [weak self] _ in
+            guard let self, let webView = self.webView, !self.pumping else { return }
+            self.pumping = true
+            webView.evaluateJavaScript("__drainFrames()") { _, _ in
+                self.pumping = false
+            }
+        }
     }
 
     // MARK: - Pipeline
@@ -233,6 +293,8 @@ final class HeadlessPDFRenderer: NSObject, WKNavigationDelegate, WKScriptMessage
         self.completion = nil
         timeout?.cancel()
         timeout = nil
+        pump?.invalidate()
+        pump = nil
         if let activity {
             ProcessInfo.processInfo.endActivity(activity)
             self.activity = nil

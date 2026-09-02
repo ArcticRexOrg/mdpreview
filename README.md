@@ -69,3 +69,5 @@ export POSIX file "/path/report.md" to POSIX file "/path/report.pdf" theme "Saku
 ```
 
 The full dictionary is in Script Editor (File ▸ Open Dictionary ▸ MarkdownPreview).
+
+Rendering happens in a window parked off-screen, so nothing appears while a script runs. A five-page document takes about three seconds from a cold app and well under one from a running one.
