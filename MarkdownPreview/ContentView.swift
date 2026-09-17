@@ -306,5 +306,14 @@ struct ContentView: View {
             }
         }
         .navigationTitle(state.selectedFile?.lastPathComponent ?? "MarkdownPreview")
+        // The window's life, not the object's, decides whether a file can
+        // land here: a closed window's state may outlive it, and a file given
+        // to that state is shown nowhere. Lend the delegate the scene's own
+        // window-opening action while a window exists to capture it from.
+        .onAppear {
+            OpenWindows.shared.register(state)
+            OpenWindows.shared.makeWindow = { openWindow(id: "main") }
+        }
+        .onDisappear { OpenWindows.shared.unregister(state) }
     }
 }
