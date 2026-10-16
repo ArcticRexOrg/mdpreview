@@ -63,8 +63,16 @@ final class AppState: ObservableObject {
         return cwd == "/" ? nil : URL(fileURLWithPath: cwd)
     }()
 
+    /// The window showing this state, once it is on screen — so the delegate
+    /// can tell whether it is on the Space the user is looking at.
+    weak var window: NSWindow?
+
+    /// Whether this window is showing, or about to show, a file.
+    var hasFile: Bool { selectedFile != nil || _claimedURL != nil }
+
     init(initialURL: URL? = nil) {
-        if let url = initialURL {
+        // A new window takes a file the delegate has waiting for one.
+        if let url = initialURL ?? OpenWindows.shared.takeAwaitingFile() {
             let dir = url.deletingLastPathComponent()
             rootDirectoryName = dir.lastPathComponent
             loadTree(of: dir)
@@ -315,5 +323,23 @@ struct ContentView: View {
             OpenWindows.shared.makeWindow = { openWindow(id: "main") }
         }
         .onDisappear { OpenWindows.shared.unregister(state) }
+        .background(WindowReader { state.window = $0 })
+    }
+}
+
+/// Hands back the NSWindow a view is in, once it has one.
+private struct WindowReader: NSViewRepresentable {
+    let onWindow: (NSWindow) -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async { [weak view] in
+            if let window = view?.window { onWindow(window) }
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        if let window = nsView.window { onWindow(window) }
     }
 }

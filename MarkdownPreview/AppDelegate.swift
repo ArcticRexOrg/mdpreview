@@ -61,45 +61,54 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Hand the file to a window SwiftUI already made. One built here carries
-    /// no scene toolbar — no mode switch, no theme, no export — and leaves
-    /// the empty launch window sitting in front of it showing nothing.
+    /// Give the file a new window of the main scene — one built here
+    /// carries no scene toolbar (no mode switch, no theme, no export).
     ///
-    /// At launch the file arrives before the scene exists, so keep asking
-    /// until it does; only if it never appears is a window built here.
+    /// A new window rather than an existing one: the newest window may be on
+    /// another Space, where the file loads unseen and the open looks like it
+    /// did nothing. A window made now is born on the Space the user is on.
+    /// The exceptions: a window on this Space already showing the file is
+    /// brought forward, and an empty one here — the launch window above all
+    /// — takes the file rather than being left beside it showing nothing.
     ///
-    /// A running app with no window gets none from SwiftUI on its own: one
-    /// launched by a script never had one, and one whose windows were all
-    /// closed keeps running without. The file used to wait out the deadline
-    /// for the fallback — or, before a closed window's state was
-    /// unregistered, be given to that state and show nowhere. So ask the
-    /// scene for a window: at once when one has existed before, otherwise
-    /// after a moment, since at launch the scene's own window is on its way.
+    /// Otherwise the file waits for the next window to be made, which takes
+    /// it as it starts. At launch that is the scene's own window, already on
+    /// its way, so ask for one only after a moment; a running app gets one at
+    /// once. Only if none ever appears is a window built here.
     @MainActor
-    private func open(_ url: URL, deadline: Date? = nil) {
-        if let state = OpenWindows.shared.newest {
-            sceneWindowRequested = false
+    private func open(_ url: URL) {
+        NSApp.activate(ignoringOtherApps: true)
+        let windows = OpenWindows.shared
+        if let state = windows.onActiveSpace.first(where: { $0.selectedFile == url }) {
+            state.window?.makeKeyAndOrderFront(nil)
+            return
+        }
+        if let state = windows.onActiveSpace.first(where: { !$0.hasFile }) {
             state.openFile(url)
-            NSApp.activate(ignoringOtherApps: true)
+            state.window?.makeKeyAndOrderFront(nil)
             return
         }
-        let deadline = deadline ?? Date().addingTimeInterval(5)
+        windows.awaitWindow(for: url)
+        awaitWindow(for: url, deadline: Date().addingTimeInterval(5), requested: false)
+    }
+
+    @MainActor
+    private func awaitWindow(for url: URL, deadline: Date, requested: Bool) {
+        guard OpenWindows.shared.isAwaitingWindow(url) else { return }
         guard Date() < deadline else {
+            _ = OpenWindows.shared.takeAwaitingFile(url)
             presentWindow(for: url)
-            NSApp.activate(ignoringOtherApps: true)
             return
         }
-        if !sceneWindowRequested,
-           OpenWindows.shared.hasHadWindows || deadline.timeIntervalSinceNow < 4 {
-            sceneWindowRequested = true
+        var requested = requested
+        if !requested, OpenWindows.shared.hasHadWindows || deadline.timeIntervalSinceNow < 4 {
+            requested = true
             requestSceneWindow()
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-            self?.open(url, deadline: deadline)
+            self?.awaitWindow(for: url, deadline: deadline, requested: requested)
         }
     }
-
-    private var sceneWindowRequested = false
 
     /// Through the scene's own action when a window has lent it, else the
     /// way a Dock click does it: a reopen event, which makes SwiftUI put up
@@ -149,8 +158,9 @@ extension Notification.Name {
     static let printDocument = Notification.Name("printDocument")
 }
 
-/// The windows currently open, newest first, so a file arriving from the
-/// Finder can be given to one instead of a window built by hand.
+/// The windows currently open, and the files waiting for a new one, so a
+/// file arriving from the Finder or the command line lands in a scene window
+/// instead of one built by hand.
 @MainActor
 final class OpenWindows {
     static let shared = OpenWindows()
@@ -176,8 +186,26 @@ final class OpenWindows {
         states.removeAll { $0() === state }
     }
 
-    var newest: AppState? {
+    /// Windows on the Space the user is looking at.
+    var onActiveSpace: [AppState] {
         states = states.filter { $0() != nil }
-        return states.last?()
+        return states.compactMap { $0() }.filter {
+            guard let window = $0.window else { return false }
+            return window.isVisible && window.isOnActiveSpace
+        }
+    }
+
+    /// Files waiting for a new window, oldest first.
+    private var awaiting: [URL] = []
+
+    func awaitWindow(for url: URL) { awaiting.append(url) }
+
+    func isAwaitingWindow(_ url: URL) -> Bool { awaiting.contains(url) }
+
+    /// The oldest file waiting for a window — or the given one — taken off
+    /// the list by the window that will show it.
+    func takeAwaitingFile(_ url: URL? = nil) -> URL? {
+        guard let index = url.map({ awaiting.firstIndex(of: $0) }) ?? awaiting.indices.first else { return nil }
+        return awaiting.remove(at: index)
     }
 }
