@@ -42,6 +42,32 @@
         #content tr:nth-child(even) td {
             background-color: #fafbfc;
         }
+
+        /* Wide tables in the reading view break out of the text column. The
+           table's block div spans the whole window (less the body gutter) and
+           scrolls sideways only when the window is too narrow as well. The
+           table sizes to its content between the text column's width
+           (100cqw, against #content) and the window's, so a narrow table
+           still fills the column exactly as before. Assumes #content is
+           centred in the window, which every theme does; its content box is
+           not, being pushed right by the heading-badge gutter, so the div
+           keeps that gutter too and centres on the column. Document mode
+           does not segment, so it keeps the page-width rules above. */
+        #content { container-type: inline-size; }
+        #content [data-seg]:has(> table) {
+            width: calc(100vw - 64px);
+            margin-left: calc(50% - 50vw + 32px - var(--badge-gutter) / 2);
+            padding-left: var(--badge-gutter);
+            overflow-x: auto;
+        }
+        #content [data-seg] > table {
+            display: table;
+            width: auto;
+            min-width: 100cqw;
+            max-width: none;
+            margin-left: auto;
+            margin-right: auto;
+        }
         #content tr:hover td {
             background-color: #f0f3f6;
         }
@@ -187,7 +213,7 @@
         /* Reserve a real gutter: themes with little body padding otherwise
            clip the badges at the pane edge (they sit outside the heading
            box). Editing view only — #content does not exist in paged mode. */
-        #content { padding-left: 3.1em; }
+        #content { --badge-gutter: 3.1em; padding-left: var(--badge-gutter); }
         #content .seg h1, #content .seg h2, #content .seg h3,
         #content .seg h4, #content .seg h5, #content .seg h6 { position: relative; }
         #content .seg h1::before, #content .seg h2::before, #content .seg h3::before,
